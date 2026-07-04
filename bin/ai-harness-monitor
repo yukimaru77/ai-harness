@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# ai-harness-monitor — one-shot health probe, run every 5 minutes by the
+# com.nonaka.ai-harness.monitor LaunchAgent (and manually any time).
+# Appends one JSON line per probe target to ~/.local/share/ai-harness/obs/health.jsonl.
+# Schema documented in OBSERVABILITY.md. Never exits nonzero on probe failure:
+# a failed probe is data, not an error.
+set -uo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+
+OBS_DIR="$HOME/.local/share/ai-harness/obs"
+HEALTH_LOG="$OBS_DIR/health.jsonl"
+MAX_BYTES=$((20 * 1024 * 1024))
+mkdir -p "$OBS_DIR"
+chmod 700 "$OBS_DIR" 2>/dev/null || true
+
+size="$(stat -f %z "$HEALTH_LOG" 2>/dev/null || echo 0)"
+if [ "$size" -gt "$MAX_BYTES" ]; then
+  mv -f "$HEALTH_LOG" "$HEALTH_LOG.1" 2>/dev/null || true
+fi
+
+TS="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+RUN_ID="$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || echo "run-$$-$(date +%s)")"
+
+emit() {
+  printf '%s\n' "$1" >> "$HEALTH_LOG" 2>/dev/null || true
+}
+
+# _probe NAME URL OK_MODE [curl args...]
+# Records full curl timing breakdown (DNS / connect / TLS / TTFB / total, ms).
+# OK_MODE "auth"  → ok only on HTTP 200 (authenticated endpoint must work)
+# OK_MODE "reach" → ok on any HTTP response < 500 (unauthenticated network
+#                   path probe: a 401 still proves DNS/TCP/TLS/server work)
+_probe() {
+  local name="$1" url="$2" ok_mode="$3"; shift 3
+  local out rc=0
+  out="$(curl -sS -m 15 -o /dev/null \
+    -w '%{http_code} %{time_namelookup} %{time_connect} %{time_appconnect} %{time_starttransfer} %{time_total} %{remote_ip}' \
+    "$@" "$url" 2>/dev/null)" || rc=$?
+  local code dns conn tls ttfb total ip ok=false
+  read -r code dns conn tls ttfb total ip <<<"${out:-0 0 0 0 0 0 -}"
+  case "$ok_mode" in
+    auth)  [ "$rc" -eq 0 ] && [ "$code" = "200" ] && ok=true ;;
+    reach) [ "$rc" -eq 0 ] && [ "${code:-0}" -ge 100 ] && [ "${code:-0}" -lt 500 ] && ok=true ;;
+  esac
+  to_ms() { awk -v s="${1:-0}" 'BEGIN{printf "%d", s*1000}'; }
+  emit "{\"schema\":1,\"ts\":\"$TS\",\"run_id\":\"$RUN_ID\",\"probe\":\"$name\",\"url\":\"$url\",\"ok\":$ok,\"http_status\":${code:-0},\"curl_rc\":$rc,\"remote_ip\":\"${ip:--}\",\"dns_ms\":$(to_ms "$dns"),\"connect_ms\":$(to_ms "$conn"),\"tls_ms\":$(to_ms "$tls"),\"ttfb_ms\":$(to_ms "$ttfb"),\"total_ms\":$(to_ms "$total")}"
+}
+
+probe_http() { local n="$1" u="$2"; shift 2; _probe "$n" "$u" auth "$@"; }
+probe_reach() { local n="$1" u="$2"; shift 2; _probe "$n" "$u" reach "$@"; }
+
+# --- CLIProxyAPI reachability + model list ---
+CLIENT_KEY="$(cat "$AI_HARNESS_HOME/secrets/cliproxy-client.key" 2>/dev/null || true)"
+if [ -n "$CLIENT_KEY" ]; then
+  probe_http cliproxy_models "$CLIPROXY_URL/v1/models" -H "Authorization: Bearer $CLIENT_KEY"
+else
+  emit "{\"schema\":1,\"ts\":\"$TS\",\"run_id\":\"$RUN_ID\",\"probe\":\"cliproxy_models\",\"ok\":false,\"error\":\"client key missing\"}"
+fi
+
+# --- LaunchAgent / process state ---
+LA="$(launchctl print "gui/$(id -u)/com.nonaka.ai-harness.cliproxy" 2>/dev/null || true)"
+LA_STATE="$(printf '%s' "$LA" | awk -F'= ' '/^\tstate =/ {print $2; exit}')"
+LA_PID="$(printf '%s' "$LA" | awk -F'= ' '/^\tpid =/ {print $2; exit}')"
+PROXY_RSS_KB=0; PROXY_ELAPSED="-"
+if [ -n "${LA_PID:-}" ]; then
+  PROXY_RSS_KB="$(ps -o rss= -p "$LA_PID" 2>/dev/null | tr -d ' ' || echo 0)"
+  PROXY_ELAPSED="$(ps -o etime= -p "$LA_PID" 2>/dev/null | tr -d ' ' || echo -)"
+fi
+emit "{\"schema\":1,\"ts\":\"$TS\",\"run_id\":\"$RUN_ID\",\"probe\":\"cliproxy_process\",\"ok\":$([ "${LA_STATE:-}" = "running" ] && echo true || echo false),\"state\":\"${LA_STATE:-absent}\",\"pid\":${LA_PID:-0},\"rss_kb\":${PROXY_RSS_KB:-0},\"uptime\":\"$PROXY_ELAPSED\"}"
+
+# --- Z.AI upstreams (both the Anthropic-compatible and OpenAI-compatible routes) ---
+ZAI_KEY="$(cat "$AI_HARNESS_HOME/secrets/zai-coding.key" 2>/dev/null || true)"
+if [ -n "$ZAI_KEY" ]; then
+  probe_http zai_anthropic "https://api.z.ai/api/anthropic/v1/models" -H "x-api-key: $ZAI_KEY"
+  probe_http zai_openai_compat "https://api.z.ai/api/coding/paas/v4/models" -H "Authorization: Bearer $ZAI_KEY"
+else
+  emit "{\"schema\":1,\"ts\":\"$TS\",\"run_id\":\"$RUN_ID\",\"probe\":\"zai\",\"ok\":false,\"error\":\"zai key missing\"}"
+fi
+
+# --- Native upstreams (claude / codex / opencode-codex routes) ---
+# Unauthenticated reachability: a 401 is a healthy answer here. These give the
+# same dns/connect/tls/ttfb breakdown as the Z.AI probes, so slow `claude` or
+# `codex` sessions can be attributed to network vs provider vs local harness.
+probe_reach anthropic_api "https://api.anthropic.com/v1/models"
+probe_reach openai_api "https://api.openai.com/v1/models"
+probe_reach chatgpt_backend "https://chatgpt.com/backend-api/models"
+
+# --- Codex OAuth credential freshness inside CLIProxyAPI ---
+AUTH_FILE="$(ls "$HOME/.local/share/ai-harness/cliproxy/auth"/codex-*.json 2>/dev/null | head -n1 || true)"
+if [ -n "$AUTH_FILE" ]; then
+  AGE_S=$(( $(date +%s) - $(stat -f %m "$AUTH_FILE" 2>/dev/null || echo 0) ))
+  DISABLED="$(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));print(str(d.get('disabled',False)).lower())" "$AUTH_FILE" 2>/dev/null || echo unknown)"
+  emit "{\"schema\":1,\"ts\":\"$TS\",\"run_id\":\"$RUN_ID\",\"probe\":\"codex_oauth_file\",\"ok\":$([ "$DISABLED" = "false" ] && echo true || echo false),\"file\":\"$(basename "$AUTH_FILE")\",\"age_seconds\":$AGE_S,\"disabled\":\"$DISABLED\"}"
+else
+  emit "{\"schema\":1,\"ts\":\"$TS\",\"run_id\":\"$RUN_ID\",\"probe\":\"codex_oauth_file\",\"ok\":false,\"error\":\"no codex auth file\"}"
+fi
+
+# --- Recent proxy-side errors (5xx lines in the last 10 minutes of main.log) ---
+MAIN_LOG="$HOME/.local/share/ai-harness/cliproxy/logs/main.log"
+ERR_RECENT=0
+if [ -f "$MAIN_LOG" ]; then
+  CUTOFF="$(date -v-10M '+%Y-%m-%d %H:%M' 2>/dev/null || echo '')"
+  if [ -n "$CUTOFF" ]; then
+    ERR_RECENT="$(tail -n 2000 "$MAIN_LOG" | awk -v cutoff="$CUTOFF" '
+      match($0, /^\[[0-9-]+ [0-9:]+\]/) {
+        ts = substr($0, 2, 16)
+        if (ts >= cutoff && ($0 ~ /\] 5[0-9][0-9] \|/)) n++
+      } END { print n+0 }')"
+  fi
+fi
+LOG_DIR_KB="$(du -sk "$HOME/.local/share/ai-harness/cliproxy/logs" 2>/dev/null | cut -f1 || echo 0)"
+OBS_DIR_KB="$(du -sk "$OBS_DIR" 2>/dev/null | cut -f1 || echo 0)"
+emit "{\"schema\":1,\"ts\":\"$TS\",\"run_id\":\"$RUN_ID\",\"probe\":\"logs\",\"ok\":true,\"proxy_5xx_last_10m\":${ERR_RECENT:-0},\"cliproxy_log_kb\":${LOG_DIR_KB:-0},\"obs_kb\":${OBS_DIR_KB:-0}}"
+
+exit 0

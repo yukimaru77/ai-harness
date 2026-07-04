@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""ai-harness-stats — human-readable analysis of ai-harness telemetry.
+
+Sources (all local, documented in OBSERVABILITY.md):
+  ~/.local/share/ai-harness/obs/events.jsonl          wrapper invocations
+  ~/.local/share/ai-harness/obs/health.jsonl          5-min health probes
+  ~/.local/share/ai-harness/obs/proxy-lifecycle.jsonl proxy start/stop/crash
+  ~/.local/share/ai-harness/cliproxy/logs/main.log    proxy access log
+
+Usage:
+  ai-harness-stats                 summary of the last 24h
+  ai-harness-stats --hours 168    last 7 days
+  ai-harness-stats --errors        recent failures only, most recent first
+  ai-harness-stats --trace ID      every event for one trace id
+  ai-harness-stats --json          machine-readable summary
+"""
+import argparse
+import json
+import os
+import re
+import sys
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+HOME = os.path.expanduser("~")
+OBS = os.path.join(HOME, ".local", "share", "ai-harness", "obs")
+EVENTS = os.path.join(OBS, "events.jsonl")
+HEALTH = os.path.join(OBS, "health.jsonl")
+LIFECYCLE = os.path.join(OBS, "proxy-lifecycle.jsonl")
+BENCH = os.path.join(OBS, "bench.jsonl")
+MAIN_LOG = os.path.join(HOME, ".local", "share", "ai-harness", "cliproxy", "logs", "main.log")
+
+GIN_RE = re.compile(
+    r"^\[(?P<ts>[\d-]+ [\d:]+)\] \[(?P<req>[0-9a-f-]+)\] \[(?P<level>\w+)\s*\] "
+    r"\[gin_logger\.go:\d+\] (?P<status>\d{3}) \|\s*(?P<latency>[\d.]+\s*\S+) \|\s*\S+ \| "
+    r"(?P<method>\S+)\s+\"(?P<path>[^\"]+)\""
+)
+
+
+def read_jsonl(path, rotated=True):
+    paths = [path]
+    if rotated:
+        paths = [path + ".2", path + ".1", path]
+    for p in paths:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            continue
+
+
+def parse_ts(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def latency_to_ms(text):
+    text = text.strip()
+    try:
+        if text.endswith("ms"):
+            return float(text[:-2])
+        if text.endswith("µs") or text.endswith("us"):
+            return float(text[:-2]) / 1000.0
+        if text.endswith("s"):
+            return float(text[:-1]) * 1000.0
+    except ValueError:
+        pass
+    return 0.0
+
+
+def pct(values, p):
+    if not values:
+        return 0
+    values = sorted(values)
+    idx = min(len(values) - 1, int(round((p / 100.0) * (len(values) - 1))))
+    return values[idx]
+
+
+def collect(since):
+    data = {"invocations": [], "health": [], "lifecycle": [], "proxy_requests": [], "bench": []}
+
+    ended = {}
+    for ev in read_jsonl(EVENTS):
+        ts = parse_ts(ev.get("ts"))
+        if ts is None or ts < since:
+            continue
+        kind = ev.get("event")
+        trace = ev.get("trace_id")
+        if kind == "start":
+            data["invocations"].append({
+                "trace_id": trace,
+                "route": ev.get("route"),
+                "ts": ev.get("ts"),
+                "argv": ev.get("argv", ""),
+                "cwd": ev.get("cwd", ""),
+                "rc": None,
+                "duration_ms": None,
+                "abnormal": None,
+                "health": [],
+                "fatal": None,
+            })
+            ended[trace] = data["invocations"][-1]
+        elif kind == "end" and trace in ended:
+            ended[trace]["rc"] = ev.get("rc")
+            ended[trace]["duration_ms"] = ev.get("duration_ms")
+            ended[trace]["abnormal"] = ev.get("abnormal")
+        elif kind == "health_check" and trace in ended:
+            ended[trace]["health"].append(ev)
+        elif kind == "fatal" and trace in ended:
+            ended[trace]["fatal"] = ev.get("reason")
+
+    for ev in read_jsonl(HEALTH):
+        ts = parse_ts(ev.get("ts"))
+        if ts is not None and ts >= since:
+            data["health"].append(ev)
+
+    for ev in read_jsonl(LIFECYCLE, rotated=False):
+        ts = parse_ts(ev.get("ts"))
+        if ts is not None and ts >= since:
+            data["lifecycle"].append(ev)
+
+    for ev in read_jsonl(BENCH, rotated=False):
+        ts = parse_ts(ev.get("ts"))
+        if ts is not None and ts >= since:
+            data["bench"].append(ev)
+
+    try:
+        with open(MAIN_LOG, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = GIN_RE.match(line)
+                if not m:
+                    continue
+                try:
+                    ts = datetime.strptime(m.group("ts"), "%Y-%m-%d %H:%M:%S").astimezone()
+                except ValueError:
+                    continue
+                if ts.astimezone(timezone.utc) < since:
+                    continue
+                data["proxy_requests"].append({
+                    "ts": m.group("ts"),
+                    "status": int(m.group("status")),
+                    "latency_ms": latency_to_ms(m.group("latency")),
+                    "method": m.group("method"),
+                    "path": m.group("path"),
+                })
+    except OSError:
+        pass
+
+    return data
+
+
+def summarize(data):
+    routes = defaultdict(lambda: {"count": 0, "errors": 0, "durations": []})
+    for inv in data["invocations"]:
+        r = routes[inv["route"] or "unknown"]
+        r["count"] += 1
+        if inv["rc"] not in (0, None):
+            r["errors"] += 1
+        if isinstance(inv["duration_ms"], (int, float)):
+            r["durations"].append(inv["duration_ms"])
+
+    probes = defaultdict(lambda: {"count": 0, "fail": 0, "latencies": []})
+    for h in data["health"]:
+        p = probes[h.get("probe", "unknown")]
+        p["count"] += 1
+        if not h.get("ok", False):
+            p["fail"] += 1
+        if isinstance(h.get("total_ms"), (int, float)):
+            p["latencies"].append(h["total_ms"])
+
+    status_counts = defaultdict(int)
+    path_errors = defaultdict(int)
+    latencies = []
+    for r in data["proxy_requests"]:
+        bucket = f"{r['status'] // 100}xx"
+        status_counts[bucket] += 1
+        latencies.append(r["latency_ms"])
+        if r["status"] >= 500:
+            path_errors[r["path"]] += 1
+
+    bench = defaultdict(lambda: {"runs": 0, "ok": 0, "durations": []})
+    for b in data["bench"]:
+        r = bench[b.get("route", "unknown")]
+        r["runs"] += 1
+        if b.get("ok"):
+            r["ok"] += 1
+        if isinstance(b.get("duration_ms"), (int, float)):
+            r["durations"].append(b["duration_ms"])
+
+    restarts = [e for e in data["lifecycle"] if e.get("event") == "boot"]
+    crashes = [e for e in data["lifecycle"] if e.get("event") == "proxy_exited" and e.get("rc") not in (0, None)]
+
+    return {
+        "routes": {k: {
+            "invocations": v["count"],
+            "errors": v["errors"],
+            "p50_ms": pct(v["durations"], 50),
+            "p95_ms": pct(v["durations"], 95),
+        } for k, v in sorted(routes.items())},
+        "probes": {k: {
+            "runs": v["count"],
+            "failures": v["fail"],
+            "p50_ms": pct(v["latencies"], 50),
+            "p95_ms": pct(v["latencies"], 95),
+        } for k, v in sorted(probes.items())},
+        "bench": {k: {
+            "runs": v["runs"],
+            "ok": v["ok"],
+            "p50_ms": pct(v["durations"], 50),
+            "p95_ms": pct(v["durations"], 95),
+        } for k, v in sorted(bench.items())},
+        "proxy": {
+            "requests": len(data["proxy_requests"]),
+            "status": dict(sorted(status_counts.items())),
+            "p50_ms": pct(latencies, 50),
+            "p95_ms": pct(latencies, 95),
+            "5xx_paths": dict(sorted(path_errors.items(), key=lambda kv: -kv[1])[:5]),
+            "boots": len(restarts),
+            "nonzero_exits": len(crashes),
+        },
+    }
+
+
+def print_summary(summary, hours):
+    print(f"AI Harness stats (last {hours}h)")
+    print()
+    print("Wrapper invocations:")
+    if not summary["routes"]:
+        print("  (none)")
+    for route, s in summary["routes"].items():
+        print(f"  {route:<16} runs={s['invocations']:<4} errors={s['errors']:<3} "
+              f"p50={s['p50_ms']:.0f}ms p95={s['p95_ms']:.0f}ms")
+    print()
+    print("Health probes (5-min monitor):")
+    if not summary["probes"]:
+        print("  (none — is com.nonaka.ai-harness.monitor loaded?)")
+    for probe, s in summary["probes"].items():
+        print(f"  {probe:<20} runs={s['runs']:<4} failures={s['failures']:<3} "
+              f"p50={s['p50_ms']:.0f}ms p95={s['p95_ms']:.0f}ms")
+    print()
+    if summary["bench"]:
+        print("Bench (ai-harness-bench, same prompt on every route):")
+        for route, s in summary["bench"].items():
+            print(f"  {route:<16} runs={s['runs']:<4} ok={s['ok']:<4} "
+                  f"p50={s['p50_ms']:.0f}ms p95={s['p95_ms']:.0f}ms")
+        print()
+    p = summary["proxy"]
+    print("CLIProxyAPI (access log):")
+    print(f"  requests={p['requests']} status={p['status']} p50={p['p50_ms']:.0f}ms p95={p['p95_ms']:.0f}ms")
+    if p["5xx_paths"]:
+        print(f"  top 5xx paths: {p['5xx_paths']}")
+    print(f"  proxy boots={p['boots']} nonzero exits={p['nonzero_exits']}")
+
+
+def print_errors(data):
+    rows = []
+    for inv in data["invocations"]:
+        if inv["rc"] not in (0, None) or inv["fatal"]:
+            rows.append((inv["ts"], f"[wrapper] {inv['route']} rc={inv['rc']} "
+                         f"fatal={inv['fatal'] or '-'} argv={inv['argv'][:80]} trace={inv['trace_id']}"))
+    for h in data["health"]:
+        if not h.get("ok", True):
+            rows.append((h.get("ts", ""), f"[probe] {h.get('probe')} status={h.get('http_status', '-')} "
+                         f"curl_rc={h.get('curl_rc', '-')} err={h.get('error', '-')}"))
+    for r in data["proxy_requests"]:
+        if r["status"] >= 500:
+            rows.append((r["ts"], f"[proxy] {r['status']} {r['method']} {r['path']} {r['latency_ms']:.0f}ms"))
+    for e in data["lifecycle"]:
+        if e.get("event") in ("proxy_exited", "render_failed") and e.get("rc", 1) != 0:
+            rows.append((e.get("ts", ""), f"[lifecycle] {e.get('event')} rc={e.get('rc', '-')}"))
+    rows.sort(reverse=True)
+    if not rows:
+        print("No failures in the selected window.")
+        return
+    for ts, msg in rows[:100]:
+        print(f"{ts}  {msg}")
+
+
+def print_trace(trace_id):
+    found = False
+    for ev in read_jsonl(EVENTS):
+        if ev.get("trace_id") == trace_id or ev.get("parent_trace_id") == trace_id:
+            found = True
+            print(json.dumps(ev, ensure_ascii=False))
+    if not found:
+        print(f"no events for trace_id {trace_id}", file=sys.stderr)
+        sys.exit(1)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--hours", type=float, default=24.0, help="analysis window in hours (default 24)")
+    ap.add_argument("--errors", action="store_true", help="list recent failures instead of the summary")
+    ap.add_argument("--trace", metavar="ID", help="dump every event for one trace id")
+    ap.add_argument("--json", action="store_true", help="emit the summary as JSON")
+    args = ap.parse_args()
+
+    if args.trace:
+        print_trace(args.trace)
+        return
+
+    since = datetime.now(timezone.utc) - timedelta(hours=args.hours)
+    data = collect(since)
+
+    if args.errors:
+        print_errors(data)
+        return
+
+    summary = summarize(data)
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print_summary(summary, args.hours)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+echo "AI Harness doctor"
+echo "OS: $(uname -a)"
+echo "Shell: $SHELL"
+echo "Real Claude: $REAL_CLAUDE ($("$REAL_CLAUDE" --version 2>/dev/null || true))"
+echo "Real Codex: $REAL_CODEX ($("$REAL_CODEX" --version 2>/dev/null || true))"
+echo "Real OpenCode: $REAL_OPENCODE ($("$REAL_OPENCODE" --version 2>/dev/null || true))"
+echo "CLIProxyAPI: $AI_HARNESS_LIBEXEC/cli-proxy-api"
+"$AI_HARNESS_LIBEXEC/cli-proxy-api" --help 2>&1 | sed -n '1p'
+launchctl print "gui/$(id -u)/com.nonaka.ai-harness.cliproxy" >/dev/null 2>&1 && echo "LaunchAgent (proxy): loaded" || echo "LaunchAgent (proxy): not loaded"
+launchctl print "gui/$(id -u)/com.nonaka.ai-harness.monitor" >/dev/null 2>&1 && echo "LaunchAgent (monitor): loaded" || echo "LaunchAgent (monitor): not loaded"
+if [ -r "$AI_HARNESS_HOME/secrets/cliproxy-client.key" ]; then
+  key=$(cat "$AI_HARNESS_HOME/secrets/cliproxy-client.key")
+  echo "Models:"
+  curl -fsS -H "Authorization: Bearer $key" "$CLIPROXY_URL/v1/models" | jq -r '.data[]?.id // empty' | sort || true
+fi
+echo "PATH command resolution:"
+for c in claude claude-codex claude-glm codex codex-glm opencode-codex opencode-glm ai-auth ai-harness-doctor ai-harness-rollback ai-harness-monitor ai-harness-stats; do
+  printf '%-22s %s\n' "$c" "$(command -v "$c" || true)"
+done
+echo "Codex profiles:"
+for f in "$HOME/.codex/oauth-gpt.config.toml" "$HOME/.codex/glm.config.toml"; do
+  [ -f "$f" ] && echo "present: $f"
+done
+echo "OpenCode configs:"
+for f in "$AI_HARNESS_HOME/opencode/codex.json" "$AI_HARNESS_HOME/opencode/glm.json"; do
+  [ -f "$f" ] && echo "present: $f"
+done
+echo "Route policy:"
+echo "claude: native Anthropic OAuth"
+echo "claude-codex: CLIProxyAPI -> OpenAI/Codex OAuth"
+echo "claude-glm: direct Z.AI Anthropic-compatible API"
+echo "codex: native Codex/OpenAI OAuth (no CLIProxyAPI)"
+echo "codex-glm: CLIProxyAPI -> Z.AI GLM, gated"
+echo "opencode-codex: native OpenCode OpenAI OAuth (no CLIProxyAPI)"
+echo "opencode-glm: direct Z.AI Coding Plan"
+echo "Residual checks:"
+if [ -f "$AI_HARNESS_HOME/state/accept-zai-codex" ]; then
+  echo "codex-glm gate: accepted"
+else
+  echo "codex-glm gate: disabled until explicit Z.AI Coding Plan/Codex compatibility acceptance"
+fi
+if [ -s "$AI_HARNESS_HOME/secrets/zai-coding.key" ]; then
+  echo "Z.AI key: present; rotate with 'ai-auth rotate zai' if this key was exposed"
+else
+  echo "Z.AI key: missing"
+fi
+deleted_codex_handles="$({ lsof +L1 2>/dev/null || true; } | awk '/\/\.codex\/logs_2\.sqlite/ {c++} END {print c+0}')"
+if [ "$deleted_codex_handles" -gt 0 ]; then
+  echo "Deleted Codex log handles: $deleted_codex_handles open; close/restart related Codex app or VM sessions to release them"
+else
+  echo "Deleted Codex log handles: none"
+fi
+if command -v jq >/dev/null 2>&1; then
+  codex_catalog="$("$REAL_CODEX" debug models 2>/dev/null | jq -r '(if type=="array" then . else (.models // .data // []) end)[]? | select((.slug // .id // .name)=="gpt-5.5") | "Codex gpt-5.5 catalog context: context_window=\(.context_window // "unknown"), max_context_window=\(.max_context_window // "unknown")"' 2>/dev/null | head -n 1 || true)"
+  if [ -n "$codex_catalog" ]; then
+    echo "$codex_catalog"
+  fi
+fi
+echo "Observability (see OBSERVABILITY.md; full analysis: ai-harness-stats):"
+OBS_DIR="$HOME/.local/share/ai-harness/obs"
+if [ -f "$OBS_DIR/health.jsonl" ]; then
+  echo "last health probes:"
+  tail -n 7 "$OBS_DIR/health.jsonl" | sed 's/^/  /'
+else
+  echo "no health.jsonl yet; run ai-harness-monitor once"
+fi
+if command -v ai-harness-stats >/dev/null 2>&1; then
+  ai-harness-stats --hours 24 --errors 2>/dev/null | head -n 12 | sed 's/^/  /' || true
+fi

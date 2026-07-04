@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+import json
+import getpass
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HOME = os.path.expanduser("~")
+BASE = os.path.join(HOME, ".config", "ai-harness")
+SHARE = os.path.join(HOME, ".local", "share", "ai-harness")
+URL = "http://127.0.0.1:8317"
+ZAI_API_KEYS_URL = "https://z.ai/manage-apikey/apikey-list"
+
+
+def load_json(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return "unreadable"
+
+
+def has_value(value):
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(has_value(v) for v in value.values())
+    if isinstance(value, list):
+        return any(has_value(v) for v in value)
+    return value is not None
+
+
+def read_secret(name):
+    with open(os.path.join(BASE, "secrets", name), "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def request(path, key_name="cliproxy-management.key", timeout=10):
+    key = read_secret(key_name)
+    req = urllib.request.Request(URL + path)
+    if key_name == "cliproxy-management.key":
+        req.add_header("X-Management-Key", key)
+    else:
+        req.add_header("Authorization", "Bearer " + key)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+    if not raw:
+        return {}
+    return json.loads(raw.decode("utf-8"))
+
+
+def open_url(target):
+    subprocess.run(["open", target], check=False)
+
+
+def atomic_write_secret(name, value):
+    secret_dir = os.path.join(BASE, "secrets")
+    target = os.path.join(secret_dir, name)
+    os.makedirs(secret_dir, mode=0o700, exist_ok=True)
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=name + ".", dir=secret_dir, text=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(value)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+    finally:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def status():
+    print("AI Harness auth status")
+    try:
+        models = request("/v1/models", "cliproxy-client.key")
+        ids = sorted([m.get("id", "") for m in models.get("data", []) if m.get("id")])
+        print("CLIProxyAPI: running")
+        print("Models:", ", ".join(ids) if ids else "(none)")
+    except Exception as e:
+        print(f"CLIProxyAPI: unavailable ({type(e).__name__})")
+
+    try:
+        files = request("/v0/management/auth-files").get("files", [])
+        codex = [f for f in files if (f.get("provider") or f.get("type") or "").lower() == "codex"]
+        ready = []
+        for item in codex:
+            name = item.get("name") or item.get("file") or item.get("id") or "codex"
+            disabled = item.get("disabled", False)
+            status_value = item.get("status") or ("disabled" if disabled else "ready")
+            updated = item.get("updated_at") or item.get("last_refresh") or item.get("modtime") or "unknown"
+            failed = item.get("failed", "unknown")
+            success = item.get("success", "unknown")
+            ready.append(f"{name}:{status_value}, updated={updated}, success={success}, failed={failed}")
+        print("CLIProxyAPI OpenAI/Codex OAuth:", ", ".join(ready) if ready else "not registered")
+    except Exception as e:
+        print(f"CLIProxyAPI OpenAI/Codex OAuth: unknown ({type(e).__name__})")
+
+    codex_auth = load_json(os.path.join(HOME, ".codex", "auth.json"))
+    if isinstance(codex_auth, dict):
+        mode = codex_auth.get("auth_mode") or "unknown"
+        token_present = has_value(codex_auth.get("tokens")) or has_value(codex_auth.get("OPENAI_API_KEY"))
+        last_refresh = codex_auth.get("last_refresh") or "unknown"
+        print(f"Codex native OAuth: {mode}, token_present={token_present}, last_refresh={last_refresh}")
+    elif codex_auth == "unreadable":
+        print("Codex native OAuth: unreadable")
+    else:
+        print("Codex native OAuth: not registered")
+
+    opencode_auth = load_json(os.path.join(HOME, ".local", "share", "opencode", "auth.json"))
+    if isinstance(opencode_auth, dict):
+        openai = opencode_auth.get("openai")
+        if isinstance(openai, dict):
+            print(f"OpenCode OpenAI auth: {openai.get('type', 'unknown')}, account_present={bool(openai.get('accountId'))}")
+        else:
+            print("OpenCode OpenAI auth: not registered")
+        zai = opencode_auth.get("zai-coding-plan")
+        if isinstance(zai, dict):
+            print(f"OpenCode Z.AI auth: {zai.get('type', 'unknown')}, key_present={has_value(zai.get('key'))}")
+        else:
+            print("OpenCode Z.AI auth: not registered")
+    elif opencode_auth == "unreadable":
+        print("OpenCode auth: unreadable")
+    else:
+        print("OpenCode auth: not registered")
+
+    claude_bin = read_paths().get("REAL_CLAUDE", "claude")
+    try:
+        result = subprocess.run([claude_bin, "auth", "status", "--text"], text=True, capture_output=True, timeout=20)
+        line = "ok" if result.returncode == 0 else "needs login"
+        print("Claude native OAuth:", line)
+    except Exception as e:
+        print(f"Claude native OAuth: unknown ({type(e).__name__})")
+
+    zai_path = os.path.join(BASE, "secrets", "zai-coding.key")
+    try:
+        zai_present = os.path.getsize(zai_path) > 0
+    except OSError:
+        zai_present = False
+    print("Z.AI Coding key:", "present" if zai_present else "missing")
+
+
+def read_paths():
+    out = {}
+    with open(os.path.join(BASE, "paths.env"), "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k] = v
+    return out
+
+
+def login_claude():
+    claude_bin = read_paths().get("REAL_CLAUDE", "claude")
+    os.execv(claude_bin, [claude_bin, "auth", "login"])
+
+
+def login_openai():
+    payload = request("/v0/management/codex-auth-url?is_webui=true")
+    target = payload.get("url")
+    state = payload.get("state")
+    if not target or not state:
+        raise SystemExit("management API did not return an OAuth URL")
+    print("Opening browser for OpenAI/Codex OAuth...")
+    open_url(target)
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        time.sleep(2)
+        poll = request("/v0/management/get-auth-status?state=" + urllib.parse.quote(state))
+        st = poll.get("status")
+        if st == "ok":
+            print("OpenAI/Codex OAuth: registered")
+            return
+        if st == "error":
+            raise SystemExit("OpenAI/Codex OAuth failed: " + str(poll.get("error", "unknown")))
+        print("waiting...")
+    raise SystemExit("OpenAI/Codex OAuth timed out")
+
+
+def login_codex():
+    codex_bin = read_paths().get("REAL_CODEX", "codex")
+    os.execv(codex_bin, [codex_bin, "login"])
+
+
+def login_opencode_openai():
+    opencode_bin = read_paths().get("REAL_OPENCODE", "opencode")
+    os.execv(opencode_bin, [opencode_bin, "providers", "login", "openai"])
+
+
+def rotate_zai():
+    print("Z.AI key rotation")
+    print(f"Opening API Keys management page: {ZAI_API_KEYS_URL}")
+    open_url(ZAI_API_KEYS_URL)
+    print("Create a replacement GLM Coding Plan key in the browser, then paste it below.")
+    print("Input is hidden and the key will not be echoed.")
+    try:
+        new_key = getpass.getpass("New Z.AI key: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit("\nZ.AI key rotation cancelled")
+    if not new_key:
+        raise SystemExit("empty Z.AI key; no changes made")
+    if any(ch.isspace() for ch in new_key):
+        raise SystemExit("Z.AI key contains whitespace; no changes made")
+    atomic_write_secret("zai-coding.key", new_key)
+    print("Stored new Z.AI key in the harness secret file.")
+    subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/com.nonaka.ai-harness.cliproxy"], check=False)
+    print("Restarted CLIProxyAPI LaunchAgent if available.")
+    print("Run `ai-auth status`, then verify `claude-glm` and `opencode-glm` before deleting the old key.")
+
+
+def logs():
+    log_dir = os.path.join(SHARE, "cliproxy", "logs")
+    try:
+        entries = [
+            e for e in os.scandir(log_dir)
+            if e.is_file() and (e.name.startswith("error-") or e.name.endswith(".err.log"))
+        ]
+    except OSError as e:
+        print(f"logs unavailable: {type(e).__name__}")
+        return
+    entries.sort(key=lambda e: e.stat().st_mtime, reverse=True)
+    print("Recent CLIProxyAPI error summaries (request/response bodies omitted)")
+    if not entries:
+        print("(none)")
+        return
+    for entry in entries[:8]:
+        summary = summarize_log_file(entry.path)
+        print(f"== {entry.name} ==")
+        for key in ("Timestamp", "Method", "URL", "Status", "Error"):
+            if summary.get(key):
+                print(f"{key}: {summary[key]}")
+
+
+def redact_text(value):
+    if not value:
+        return value
+    redacted = value
+    for secret in ("cliproxy-client.key", "cliproxy-management.key", "zai-coding.key"):
+        try:
+            token = read_secret(secret)
+            if token:
+                redacted = redacted.replace(token, "[REDACTED]")
+        except OSError:
+            pass
+    patterns = [
+        (r"(?i)(authorization:\s*bearer\s+)[^\s]+", r"\1[REDACTED]"),
+        (r"(?i)(x-management-key:\s*)[^\s]+", r"\1[REDACTED]"),
+        (r"(?i)(api[-_]?key[\"':=\s]+)[A-Za-z0-9._-]+", r"\1[REDACTED]"),
+        (r"(?i)(access_token[\"':=\s]+)[A-Za-z0-9._-]+", r"\1[REDACTED]"),
+        (r"(?i)(refresh_token[\"':=\s]+)[A-Za-z0-9._-]+", r"\1[REDACTED]"),
+    ]
+    for pattern, repl in patterns:
+        redacted = re.sub(pattern, repl, redacted)
+    return redacted
+
+
+def summarize_log_file(path):
+    summary = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError:
+        return {"Error": "unreadable"}
+    for raw in lines:
+        line = redact_text(raw.strip())
+        if not line:
+            continue
+        for key in ("Timestamp", "URL", "Method", "Status"):
+            prefix = key + ":"
+            if line.startswith(prefix) and key not in summary:
+                summary[key] = line[len(prefix):].strip()
+        if "error" in line.lower() and "Error" not in summary:
+            summary["Error"] = line[:240]
+    return summary
+
+
+def obs_log(command, rc=0):
+    """Append one invocation event to the shared obs stream (best effort)."""
+    if os.environ.get("AI_HARNESS_OBS", "1") != "1":
+        return
+    try:
+        import uuid
+        from datetime import datetime, timezone
+        obs_dir = os.path.join(SHARE, "obs")
+        os.makedirs(obs_dir, exist_ok=True)
+        event = {
+            "schema": 1,
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "ts_ms": int(time.time() * 1000),
+            "trace_id": os.environ.get("AI_HARNESS_TRACE_ID") or str(uuid.uuid4()),
+            "route": "ai-auth",
+            "event": "invocation",
+            "pid": os.getpid(),
+            "argv": command,
+            "rc": rc,
+        }
+        with open(os.path.join(obs_dir, "events.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def main():
+    cmd = sys.argv[1:] or ["status"]
+    obs_log(" ".join(cmd))
+    if cmd == ["status"]:
+        status()
+    elif cmd == ["login", "claude"]:
+        login_claude()
+    elif cmd == ["login", "openai"]:
+        login_openai()
+    elif cmd == ["login", "codex"]:
+        login_codex()
+    elif cmd == ["login", "opencode-openai"]:
+        login_opencode_openai()
+    elif cmd == ["open"]:
+        open_url(URL + "/management.html")
+    elif cmd == ["open", "zai"]:
+        open_url(ZAI_API_KEYS_URL)
+    elif cmd == ["rotate", "zai"]:
+        rotate_zai()
+    elif cmd == ["logs"]:
+        logs()
+    elif cmd == ["doctor"]:
+        os.execvp("ai-harness-doctor", ["ai-harness-doctor"])
+    else:
+        print("usage: ai-auth [status|login claude|login openai|login codex|login opencode-openai|open|open zai|rotate zai|logs|doctor]", file=sys.stderr)
+        raise SystemExit(64)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+. "$HOME/.local/share/ai-harness/lib/obs.sh"
+OBS_WRAPPER_VERSION=2
+obs_init claude-codex "$@"
+
+CLIENT_KEY_FILE="$AI_HARNESS_HOME/secrets/cliproxy-client.key"
+[ -r "$CLIENT_KEY_FILE" ] || {
+  obs_event fatal reason=missing_client_key file="$CLIENT_KEY_FILE"
+  echo "missing CLIProxyAPI client key" >&2
+  exit 70
+}
+CLIENT_KEY="$(cat "$CLIENT_KEY_FILE")"
+obs_redact_add "$CLIENT_KEY"
+
+if ! obs_curl_probe cliproxy "$CLIPROXY_URL/v1/models" -H "Authorization: Bearer $CLIENT_KEY"; then
+  obs_event fatal reason=cliproxy_unreachable url="$CLIPROXY_URL"
+  echo "CLIProxyAPI is not running or not reachable. Run: ai-auth status" >&2
+  exit 69
+fi
+
+export CLAUDE_CONFIG_DIR="$AI_HARNESS_HOME/claude-codex"
+export ANTHROPIC_BASE_URL="$CLIPROXY_URL"
+export ANTHROPIC_AUTH_TOKEN="$CLIENT_KEY"
+# Pin every model role: without these, Claude Code falls back to Anthropic
+# model names for main/background requests and CLIProxyAPI rejects them
+# (502 unknown provider).
+export ANTHROPIC_MODEL="oauth-gpt-5.5"
+export ANTHROPIC_SMALL_FAST_MODEL="oauth-gpt-5.5"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="oauth-gpt-5.5"
+# Propagate the trace id on every API request so CLIProxyAPI error dumps
+# (obs + cliproxy/logs/error-*.log) can be joined on x-ai-harness-trace.
+export ANTHROPIC_CUSTOM_HEADERS="x-ai-harness-trace: $AI_HARNESS_TRACE_ID"
+unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL
+
+obs_event route_resolved \
+  base_url="$CLIPROXY_URL" \
+  model=oauth-gpt-5.5 \
+  config_dir="$CLAUDE_CONFIG_DIR" \
+  real_bin="$REAL_CLAUDE"
+
+obs_run "$REAL_CLAUDE" \
+  --settings "$AI_HARNESS_HOME/claude/codex-settings.json" \
+  --model oauth-gpt-5.5 \
+  --dangerously-skip-permissions \
+  "$@"

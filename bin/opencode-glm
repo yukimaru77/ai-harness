@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+. "$HOME/.local/share/ai-harness/lib/obs.sh"
+OBS_WRAPPER_VERSION=2
+obs_init opencode-glm "$@"
+ZAI_KEY_FILE="$AI_HARNESS_HOME/secrets/zai-coding.key"
+[ -r "$ZAI_KEY_FILE" ] || {
+  obs_event fatal reason=missing_zai_key file="$ZAI_KEY_FILE"
+  echo "missing Z.AI Coding key" >&2
+  exit 70
+}
+export OPENCODE_CONFIG="$AI_HARNESS_HOME/opencode/glm.json"
+export ZAI_CODING_API_KEY="$(cat "$ZAI_KEY_FILE")"
+obs_redact_add "$ZAI_CODING_API_KEY"
+unset OPENAI_API_KEY OPENAI_BASE_URL
+setup_temp_db() {
+  [ -z "${OPENCODE_DB:-}" ] || return 0
+  local db_dir
+  db_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-harness-opencode-glm.XXXXXX")"
+  export OPENCODE_DB="$db_dir/opencode.db"
+}
+case "${1:-}" in
+  --version|-v|--help|-h|upgrade|uninstall|completion)
+    obs_event passthrough subcommand="${1:-}"
+    obs_run "$REAL_OPENCODE" "$@"
+    exit $?
+    ;;
+  mcp)
+    setup_temp_db
+    obs_event passthrough subcommand=mcp
+    obs_run "$REAL_OPENCODE" "$@"
+    exit $?
+    ;;
+esac
+setup_run_db() {
+  setup_temp_db
+}
+normalize_run_args() {
+  local fixed_model="zai-coding-plan/glm-5.2"
+  local fixed_variant="high"
+  RUN_ARGS=()
+  local end_opts=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$end_opts" -eq 1 ]; then
+      RUN_ARGS+=("$1")
+      shift
+      continue
+    fi
+    case "$1" in
+      --)
+        end_opts=1
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+      --model)
+        [ "$#" -ge 2 ] || { echo "opencode-glm: --model requires a value" >&2; exit 64; }
+        [ "$2" = "$fixed_model" ] || { echo "opencode-glm: fixed model is $fixed_model" >&2; exit 64; }
+        shift 2
+        ;;
+      --model=*)
+        [ "${1#--model=}" = "$fixed_model" ] || { echo "opencode-glm: fixed model is $fixed_model" >&2; exit 64; }
+        shift
+        ;;
+      --variant)
+        [ "$#" -ge 2 ] || { echo "opencode-glm: --variant requires a value" >&2; exit 64; }
+        [ "$2" = "$fixed_variant" ] || { echo "opencode-glm: fixed variant is $fixed_variant" >&2; exit 64; }
+        shift 2
+        ;;
+      --variant=*)
+        [ "${1#--variant=}" = "$fixed_variant" ] || { echo "opencode-glm: fixed variant is $fixed_variant" >&2; exit 64; }
+        shift
+        ;;
+      --continue|-c|--fork)
+        [ -n "${OPENCODE_DB:-}" ] || { echo "opencode-glm: $1 requires a persistent OPENCODE_DB" >&2; exit 64; }
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+      --session|-s)
+        [ "$#" -ge 2 ] || { echo "opencode-glm: $1 requires a value" >&2; exit 64; }
+        [ -n "${OPENCODE_DB:-}" ] || { echo "opencode-glm: $1 requires a persistent OPENCODE_DB" >&2; exit 64; }
+        RUN_ARGS+=("$1" "$2")
+        shift 2
+        ;;
+      --session=*)
+        [ -n "${OPENCODE_DB:-}" ] || { echo "opencode-glm: --session requires a persistent OPENCODE_DB" >&2; exit 64; }
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+      *)
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+if [ "${1:-}" = "run" ]; then
+  RUN_ARGS=()
+  normalize_run_args "${@:2}"
+  setup_run_db
+  obs_event route_resolved provider=native_zai_coding_plan model=zai-coding-plan/glm-5.2 mode=run db="${OPENCODE_DB:-}" real_bin="$REAL_OPENCODE"
+  obs_run "$REAL_OPENCODE" run --model zai-coding-plan/glm-5.2 --variant high --dangerously-skip-permissions "${RUN_ARGS[@]}"
+  exit $?
+fi
+obs_event route_resolved provider=native_zai_coding_plan model=zai-coding-plan/glm-5.2 mode=tui db="${OPENCODE_DB:-}" real_bin="$REAL_OPENCODE"
+obs_run "$REAL_OPENCODE" --model zai-coding-plan/glm-5.2 --dangerously-skip-permissions "$@"

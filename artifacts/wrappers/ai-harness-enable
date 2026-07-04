@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+case "${1:-}" in
+  codex-glm)
+    cat <<'EOF'
+codex-glm uses Codex CLI through CLIProxyAPI Responses-to-Chat conversion against Z.AI Coding Plan.
+Z.AI explicitly documents Claude Code and OpenCode paths; Codex CLI compatibility is treated as experimental here.
+EOF
+    printf 'Type ACCEPT to enable codex-glm: '
+    IFS= read -r answer
+    [ "$answer" = "ACCEPT" ] || { echo "not enabled"; exit 78; }
+    : > "$AI_HARNESS_HOME/state/accept-zai-codex"
+    chmod 600 "$AI_HARNESS_HOME/state/accept-zai-codex"
+    echo "codex-glm enabled"
+    ;;
+  *)
+    echo "usage: ai-harness-enable codex-glm" >&2
+    exit 64
+    ;;
+esac

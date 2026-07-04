@@ -1,0 +1,19 @@
+CLIProxyAPI source tag: v7.2.39
+CLIProxyAPI source commit: c4cf0fd3241afca8b63673bac7e0fc2e11ed9426
+Local installed version: 7.2.39-ai-harness.2
+Local installed commit label: c4cf0fd3-local
+Local build date: 2026-06-25T17:04:16Z
+Local binary: /Users/nonaka/.local/libexec/ai-harness/cli-proxy-api
+Local binary SHA-256: 71e407415529ffe7d573ba0e98dbb48362c0fa81a91cc264c1186b5e6ad2e16a
+CLIProxyAPI starter: /Users/nonaka/.local/libexec/ai-harness/cli-proxy-api-start
+CLIProxyAPI starter SHA-256: a9e746579a627e1cf1621f0227f1a9a5e7adfcbee9aa2b54fb5b56cbb4c350de
+Original release binary backup: /Users/nonaka/.local/libexec/ai-harness/cli-proxy-api.release-v7.2.39.20260626-002151.bak
+Original release binary SHA-256: 18666393fbd53895945fa3dd2f0dbe6c9074e5c37d2a813342a61f3be6766bca
+Previous local binary backup: /Users/nonaka/.local/libexec/ai-harness/cli-proxy-api.pre-refreshhash.20260626-020416.bak
+Previous local binary SHA-256: a5c8f9b672836978cd0102afc914f479d7bb5e7ee5895f45bf44798c14fedbee
+Release tarball SHA-256: 041dbb1e3549c2b9ac47f78ca29d8c4eb54da30777f8d14ee1c1e0528187652d
+Management Center version: v1.17.6
+Management Center asset: /Users/nonaka/.local/share/ai-harness/cliproxy/static/management.html
+Management Center SHA-256: 268bf8d53021bd3afbb695b2cabb9780c4a9546ffa70202517e79380cd4b12f3
+Applied patch: artifacts/vendor/cliproxy-codex-openai-responses-sse.patch
+Applied patch: artifacts/vendor/cliproxy-codex-refresh-singleflight-hash.patch

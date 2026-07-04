@@ -1,0 +1,319 @@
+diff --git a/internal/runtime/executor/codex_executor.go b/internal/runtime/executor/codex_executor.go
+index 966a132..5368ea2 100644
+--- a/internal/runtime/executor/codex_executor.go
++++ b/internal/runtime/executor/codex_executor.go
+@@ -41,6 +41,58 @@ const (
+ 
+ var dataTag = []byte("data:")
+ 
++type codexOpenAIResponsesSSEFrame struct {
++	event string
++	data  [][]byte
++}
++
++func (f *codexOpenAIResponsesSSEFrame) reset() {
++	f.event = ""
++	f.data = f.data[:0]
++}
++
++func (f *codexOpenAIResponsesSSEFrame) addLine(line []byte) {
++	trimmed := bytes.TrimSpace(line)
++	if len(trimmed) == 0 {
++		return
++	}
++	if bytes.HasPrefix(trimmed, []byte("event:")) {
++		f.event = strings.TrimSpace(string(trimmed[len("event:"):]))
++		return
++	}
++	if bytes.HasPrefix(trimmed, dataTag) {
++		data := bytes.TrimSpace(trimmed[len(dataTag):])
++		f.data = append(f.data, append([]byte(nil), data...))
++	}
++}
++
++func (f *codexOpenAIResponsesSSEFrame) hasData() bool {
++	return len(f.data) > 0
++}
++
++func (f *codexOpenAIResponsesSSEFrame) payload() []byte {
++	if len(f.data) == 0 {
++		return nil
++	}
++	return bytes.Join(f.data, []byte("\n"))
++}
++
++func formatCodexOpenAIResponsesSSEFrame(eventName string, payload []byte) []byte {
++	var out bytes.Buffer
++	if eventName = strings.TrimSpace(eventName); eventName != "" {
++		out.WriteString("event: ")
++		out.WriteString(eventName)
++		out.WriteByte('\n')
++	}
++	for _, line := range bytes.Split(payload, []byte("\n")) {
++		out.WriteString("data: ")
++		out.Write(line)
++		out.WriteByte('\n')
++	}
++	out.WriteByte('\n')
++	return out.Bytes()
++}
++
+ // Streamed Codex responses may emit response.output_item.done events while leaving
+ // response.completed.response.output empty. Keep the stream path aligned with the
+ // already-patched non-stream path by reconstructing response.output from those items.
+@@ -1137,6 +1189,17 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 				log.Errorf("codex executor: close response body error: %v", errClose)
+ 			}
+ 		}()
++		if sourceFormatEqual(responseFormat, sdktranslator.FormatOpenAIResponse) {
++			if errForward := e.forwardCodexOpenAIResponsesStream(ctx, httpResp.Body, out, reporter, replayScope, identityState, body); errForward != nil {
++				helps.RecordAPIResponseError(ctx, e.cfg, errForward)
++				reporter.PublishFailure(ctx, errForward)
++				select {
++				case out <- cliproxyexecutor.StreamChunk{Err: errForward}:
++				case <-ctx.Done():
++				}
++			}
++			return
++		}
+ 		scanner := bufio.NewScanner(httpResp.Body)
+ 		scanner.Buffer(nil, 52_428_800) // 50MB
+ 		var param any
+@@ -1203,6 +1266,90 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+ }
+ 
++func (e *CodexExecutor) forwardCodexOpenAIResponsesStream(ctx context.Context, r io.Reader, out chan<- cliproxyexecutor.StreamChunk, reporter *helps.UsageReporter, replayScope codexReasoningReplayScope, identityState codexIdentityConfuseState, requestBody []byte) error {
++	reader := bufio.NewReader(r)
++	outputItemsByIndex := make(map[int64][]byte)
++	var outputItemsFallback [][]byte
++	var frame codexOpenAIResponsesSSEFrame
++
++	sendPayload := func(payload []byte) bool {
++		select {
++		case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
++			return true
++		case <-ctx.Done():
++			return false
++		}
++	}
++
++	emit := func() error {
++		defer frame.reset()
++		if !frame.hasData() {
++			return nil
++		}
++		payload := bytes.TrimSpace(frame.payload())
++		if len(payload) == 0 {
++			return nil
++		}
++		if bytes.Equal(payload, []byte("[DONE]")) {
++			if !sendPayload(formatCodexOpenAIResponsesSSEFrame("", payload)) {
++				return ctx.Err()
++			}
++			return nil
++		}
++
++		eventType := gjson.GetBytes(payload, "type").String()
++		if frame.event == "" {
++			frame.event = eventType
++		}
++		if streamErr, terminalBody, ok := codexTerminalStreamErr(payload); ok {
++			if errClearReplay := clearCodexReasoningReplayOnInvalidSignature(ctx, replayScope, streamErr.StatusCode(), terminalBody); errClearReplay != nil {
++				return errClearReplay
++			}
++			return streamErr
++		}
++
++		switch eventType {
++		case "response.output_item.done":
++			collectCodexOutputItemDone(payload, outputItemsByIndex, &outputItemsFallback)
++		case "response.completed":
++			if detail, ok := helps.ParseCodexUsage(payload); ok {
++				reporter.Publish(ctx, detail)
++			}
++			publishCodexImageToolUsage(ctx, reporter, requestBody, payload)
++			payload = patchCodexCompletedOutput(payload, outputItemsByIndex, outputItemsFallback)
++			cacheCodexReasoningReplayFromCompleted(replayScope, payload)
++		}
++
++		payload = applyCodexIdentityExposeResponsePayload(payload, identityState)
++		if !sendPayload(formatCodexOpenAIResponsesSSEFrame(frame.event, payload)) {
++			return ctx.Err()
++		}
++		return nil
++	}
++
++	for {
++		line, readErr := reader.ReadBytes('\n')
++		if len(line) > 0 {
++			line = bytes.TrimRight(line, "\r\n")
++			line = applyCodexIdentityConfuseResponsePayload(line, identityState)
++			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
++			if len(bytes.TrimSpace(line)) == 0 {
++				if errEmit := emit(); errEmit != nil {
++					return errEmit
++				}
++			} else {
++				frame.addLine(line)
++			}
++		}
++		if readErr == io.EOF {
++			return emit()
++		}
++		if readErr != nil {
++			return fmt.Errorf("codex stream read: %w", readErr)
++		}
++	}
++}
++
+ func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+ 	baseModel := thinking.ParseSuffix(req.Model).ModelName
+ 
+diff --git a/internal/runtime/executor/codex_executor_stream_output_test.go b/internal/runtime/executor/codex_executor_stream_output_test.go
+index f495d3c..f78b162 100644
+--- a/internal/runtime/executor/codex_executor_stream_output_test.go
++++ b/internal/runtime/executor/codex_executor_stream_output_test.go
+@@ -20,7 +20,7 @@ import (
+ func TestCodexExecutorExecute_EmptyStreamCompletionOutputUsesOutputItemDone(t *testing.T) {
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		w.Header().Set("Content-Type", "text/event-stream")
+-		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]},\"output_index\":0}\n"))
++		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]},\"output_index\":0}\n\n"))
+ 		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1775555723,\"status\":\"completed\",\"model\":\"gpt-5.4-mini-2026-03-17\",\"output\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":28,\"total_tokens\":36}}}\n\n"))
+ 	}))
+ 	defer server.Close()
+@@ -210,7 +210,7 @@ func statusCodeFromTestError(t *testing.T, err error) int {
+ func TestCodexExecutorExecuteStream_EmptyStreamCompletionOutputUsesOutputItemDone(t *testing.T) {
+ 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ 		w.Header().Set("Content-Type", "text/event-stream")
+-		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]},\"output_index\":0}\n"))
++		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]},\"output_index\":0}\n\n"))
+ 		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1775555723,\"status\":\"completed\",\"model\":\"gpt-5.4-mini-2026-03-17\",\"output\":[],\"usage\":{\"input_tokens\":8,\"output_tokens\":28,\"total_tokens\":36}}}\n\n"))
+ 	}))
+ 	defer server.Close()
+@@ -237,11 +237,10 @@ func TestCodexExecutorExecuteStream_EmptyStreamCompletionOutputUsesOutputItemDon
+ 		if chunk.Err != nil {
+ 			t.Fatalf("stream chunk error: %v", chunk.Err)
+ 		}
+-		payload := bytes.TrimSpace(chunk.Payload)
+-		if !bytes.HasPrefix(payload, []byte("data:")) {
++		data, ok := testSSEDataPayload(chunk.Payload)
++		if !ok {
+ 			continue
+ 		}
+-		data := bytes.TrimSpace(payload[5:])
+ 		if gjson.GetBytes(data, "type").String() == "response.completed" {
+ 			completed = append([]byte(nil), data...)
+ 		}
+@@ -256,3 +255,110 @@ func TestCodexExecutorExecuteStream_EmptyStreamCompletionOutputUsesOutputItemDon
+ 		t.Fatalf("response.output[0].content[0].text = %q, want %q; completed=%s", gotContent, "ok", string(completed))
+ 	}
+ }
++
++func testSSEDataPayload(frame []byte) ([]byte, bool) {
++	var payload []byte
++	found := false
++	for _, line := range bytes.Split(frame, []byte("\n")) {
++		line = bytes.TrimSpace(line)
++		if !bytes.HasPrefix(line, []byte("data:")) {
++			continue
++		}
++		if found {
++			payload = append(payload, '\n')
++		}
++		payload = append(payload, bytes.TrimSpace(line[len("data:"):])...)
++		found = true
++	}
++	return payload, found
++}
++
++func TestCodexExecutorExecuteStream_OpenAIResponsesFramesEventAndData(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "text/event-stream")
++		_, _ = w.Write([]byte("event: response.output_item.done\n"))
++		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]},"output_index":0}` + "\n\n"))
++		_, _ = w.Write([]byte("event: response.completed\n"))
++		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"))
++	}))
++	defer server.Close()
++
++	executor := NewCodexExecutor(&config.Config{})
++	auth := &cliproxyauth.Auth{Attributes: map[string]string{
++		"base_url": server.URL,
++		"api_key":  "test",
++	}}
++
++	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
++		Model:   "gpt-5.5",
++		Payload: []byte(`{"model":"gpt-5.5","input":"Say ok"}`),
++	}, cliproxyexecutor.Options{
++		SourceFormat: sdktranslator.FromString("openai-response"),
++		Stream:       true,
++	})
++	if err != nil {
++		t.Fatalf("ExecuteStream error: %v", err)
++	}
++
++	var body bytes.Buffer
++	for chunk := range result.Chunks {
++		if chunk.Err != nil {
++			t.Fatalf("stream chunk error: %v", chunk.Err)
++		}
++		body.Write(chunk.Payload)
++	}
++
++	got := body.String()
++	if !strings.Contains(got, "event: response.completed\n") {
++		t.Fatalf("missing completed event in stream: %q", got)
++	}
++	if !strings.Contains(got, `"type":"response.completed"`) {
++		t.Fatalf("missing completed payload in stream: %q", got)
++	}
++	if !strings.Contains(got, `"text":"ok"`) {
++		t.Fatalf("completed output was not patched from output_item.done: %q", got)
++	}
++}
++
++func TestCodexExecutorExecuteStream_OpenAIResponsesHandlesLargeDataLine(t *testing.T) {
++	big := strings.Repeat("x", 128*1024)
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Header().Set("Content-Type", "text/event-stream")
++		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
++		_, _ = w.Write([]byte(`data: {"type":"response.output_text.delta","delta":"` + big + `"}` + "\n\n"))
++		_, _ = w.Write([]byte("event: response.completed\n"))
++		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_1","output":[]}}` + "\n\n"))
++	}))
++	defer server.Close()
++
++	executor := NewCodexExecutor(&config.Config{})
++	auth := &cliproxyauth.Auth{Attributes: map[string]string{
++		"base_url": server.URL,
++		"api_key":  "test",
++	}}
++
++	result, err := executor.ExecuteStream(context.Background(), auth, cliproxyexecutor.Request{
++		Model:   "gpt-5.5",
++		Payload: []byte(`{"model":"gpt-5.5","input":"Say ok"}`),
++	}, cliproxyexecutor.Options{
++		SourceFormat: sdktranslator.FromString("openai-response"),
++		Stream:       true,
++	})
++	if err != nil {
++		t.Fatalf("ExecuteStream error: %v", err)
++	}
++
++	var body bytes.Buffer
++	for chunk := range result.Chunks {
++		if chunk.Err != nil {
++			t.Fatalf("stream chunk error: %v", chunk.Err)
++		}
++		body.Write(chunk.Payload)
++	}
++	if !strings.Contains(body.String(), big[:1024]) {
++		t.Fatal("large streamed data line was not forwarded")
++	}
++	if !strings.Contains(body.String(), "event: response.completed\n") {
++		t.Fatalf("missing completed event in stream")
++	}
++}

@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+. "$HOME/.local/share/ai-harness/lib/obs.sh"
+OBS_WRAPPER_VERSION=2
+obs_init opencode-codex "$@"
+
+export OPENCODE_CONFIG="$AI_HARNESS_HOME/opencode/codex.json"
+unset OPENAI_API_KEY OPENAI_BASE_URL CLIPROXY_API_KEY
+
+setup_temp_db() {
+  [ -z "${OPENCODE_DB:-}" ] || return 0
+  local db_dir
+  db_dir="$(mktemp -d "${TMPDIR:-/tmp}/ai-harness-opencode-codex.XXXXXX")"
+  export OPENCODE_DB="$db_dir/opencode.db"
+}
+
+case "${1:-}" in
+  --version|-v|--help|-h|upgrade|uninstall|completion|providers|auth|models)
+    setup_temp_db
+    obs_event passthrough subcommand="${1:-}"
+    obs_run "$REAL_OPENCODE" "$@"
+    exit $?
+    ;;
+  mcp)
+    setup_temp_db
+    obs_event passthrough subcommand=mcp
+    obs_run "$REAL_OPENCODE" "$@"
+    exit $?
+    ;;
+esac
+
+normalize_run_args() {
+  local fixed_model="openai/gpt-5.5"
+  local fixed_variant="high"
+  RUN_ARGS=()
+  local end_opts=0
+  while [ "$#" -gt 0 ]; do
+    if [ "$end_opts" -eq 1 ]; then
+      RUN_ARGS+=("$1")
+      shift
+      continue
+    fi
+    case "$1" in
+      --)
+        end_opts=1
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+      --model)
+        [ "$#" -ge 2 ] || { echo "opencode-codex: --model requires a value" >&2; exit 64; }
+        [ "$2" = "$fixed_model" ] || { echo "opencode-codex: fixed model is $fixed_model" >&2; exit 64; }
+        shift 2
+        ;;
+      --model=*)
+        [ "${1#--model=}" = "$fixed_model" ] || { echo "opencode-codex: fixed model is $fixed_model" >&2; exit 64; }
+        shift
+        ;;
+      --variant)
+        [ "$#" -ge 2 ] || { echo "opencode-codex: --variant requires a value" >&2; exit 64; }
+        [ "$2" = "$fixed_variant" ] || { echo "opencode-codex: fixed variant is $fixed_variant" >&2; exit 64; }
+        shift 2
+        ;;
+      --variant=*)
+        [ "${1#--variant=}" = "$fixed_variant" ] || { echo "opencode-codex: fixed variant is $fixed_variant" >&2; exit 64; }
+        shift
+        ;;
+      --continue|-c|--fork)
+        [ -n "${OPENCODE_DB:-}" ] || { echo "opencode-codex: $1 requires a persistent OPENCODE_DB" >&2; exit 64; }
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+      --session|-s)
+        [ "$#" -ge 2 ] || { echo "opencode-codex: $1 requires a value" >&2; exit 64; }
+        [ -n "${OPENCODE_DB:-}" ] || { echo "opencode-codex: $1 requires a persistent OPENCODE_DB" >&2; exit 64; }
+        RUN_ARGS+=("$1" "$2")
+        shift 2
+        ;;
+      --session=*)
+        [ -n "${OPENCODE_DB:-}" ] || { echo "opencode-codex: --session requires a persistent OPENCODE_DB" >&2; exit 64; }
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+      *)
+        RUN_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+if [ "${1:-}" = "run" ]; then
+  RUN_ARGS=()
+  normalize_run_args "${@:2}"
+  setup_temp_db
+  obs_event route_resolved provider=native_opencode_openai model=openai/gpt-5.5 mode=run db="$OPENCODE_DB" real_bin="$REAL_OPENCODE"
+  obs_run "$REAL_OPENCODE" run --model openai/gpt-5.5 --variant high --dangerously-skip-permissions "${RUN_ARGS[@]}"
+  exit $?
+fi
+
+setup_temp_db
+obs_event route_resolved provider=native_opencode_openai model=openai/gpt-5.5 mode=tui db="$OPENCODE_DB" real_bin="$REAL_OPENCODE"
+obs_run "$REAL_OPENCODE" --model openai/gpt-5.5 --dangerously-skip-permissions "$@"

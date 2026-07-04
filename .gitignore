@@ -1,0 +1,27 @@
+# Credentials and runtime state — never commit.
+# (Secrets themselves live outside this tree in ~/.config/ai-harness/secrets;
+# cliproxy/auth holds OAuth token files.)
+cliproxy/auth/
+cliproxy/logs/
+
+# Local telemetry data (schemas are in OBSERVABILITY.md; data stays local).
+obs/
+
+# Rollback quarantine snapshots.
+quarantine/
+
+# Vendored upstream blobs (52MB binary dist, upstream source, panel build).
+# Reproducibility is covered by artifacts/vendor: build-info.txt,
+# checksums.sha256, and the local patches.
+vendor/cliproxy-v7.2.39/
+vendor/CLIProxyAPI-src-v7.2.39/
+vendor/management-v1.17.6/
+
+# Management panel static build served by the proxy.
+cliproxy/static/
+
+# Backups and OS noise.
+*.bak
+*.bak-*
+*.bak.*
+.DS_Store

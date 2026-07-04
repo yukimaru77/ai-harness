@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+. "$HOME/.local/share/ai-harness/lib/obs.sh"
+OBS_WRAPPER_VERSION=2
+obs_init claude-glm "$@"
+
+ZAI_KEY_FILE="$AI_HARNESS_HOME/secrets/zai-coding.key"
+[ -s "$ZAI_KEY_FILE" ] || {
+  obs_event fatal reason=missing_zai_key file="$ZAI_KEY_FILE"
+  echo "missing Z.AI Coding key. Run: ai-auth rotate zai" >&2
+  exit 70
+}
+ZAI_KEY="$(cat "$ZAI_KEY_FILE")"
+obs_redact_add "$ZAI_KEY"
+
+# Official Z.AI Claude Code route (https://docs.z.ai/devpack/tool/claude):
+# base URL + auth token here, model role mapping via
+# ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL in glm-settings.json.
+export CLAUDE_CONFIG_DIR="$AI_HARNESS_HOME/claude-glm"
+export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
+export ANTHROPIC_AUTH_TOKEN="$ZAI_KEY"
+export ANTHROPIC_CUSTOM_HEADERS="x-ai-harness-trace: $AI_HARNESS_TRACE_ID"
+unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL
+
+# Reachability probe (does not gate startup: Claude Code retries on its own,
+# but the latency sample makes upstream flakiness visible in ai-harness-stats).
+obs_curl_probe zai_anthropic "https://api.z.ai/api/anthropic/v1/models" -H "x-api-key: $ZAI_KEY" || true
+
+obs_event route_resolved \
+  base_url="$ANTHROPIC_BASE_URL" \
+  model_mapping="opus/sonnet=glm-5.2[1m],haiku=glm-4.7" \
+  config_dir="$CLAUDE_CONFIG_DIR" \
+  real_bin="$REAL_CLAUDE"
+
+obs_run "$REAL_CLAUDE" \
+  --settings "$AI_HARNESS_HOME/claude/glm-settings.json" \
+  --model opus \
+  --dangerously-skip-permissions \
+  "$@"

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "zai-coding-plan/glm-5.2",
+  "small_model": "zai-coding-plan/glm-5.2",
+  "mcp": {
+    "test-wait": {
+      "type": "local",
+      "command": [
+        "node",
+        "/Users/nonaka/src/test-wait-mcp/dist/index.js"
+      ],
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
+  "provider": {
+    "zai-coding-plan": {
+      "options": {
+        "apiKey": "{env:ZAI_CODING_API_KEY}",
+        "timeout": 600000
+      },
+      "models": {
+        "glm-5.2": {
+          "name": "GLM-5.2 Coding Plan / High",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          },
+          "options": {
+            "thinking": {
+              "type": "enabled"
+            },
+            "reasoningEffort": "high"
+          },
+          "variants": {
+            "high": {
+              "thinking": {
+                "type": "enabled"
+              },
+              "reasoningEffort": "high"
+            }
+          }
+        }
+      }
+    }
+  },
+  "agent": {
+    "build": {
+      "model": "zai-coding-plan/glm-5.2",
+      "reasoningEffort": "high"
+    },
+    "plan": {
+      "model": "zai-coding-plan/glm-5.2",
+      "reasoningEffort": "high"
+    }
+  }
+}

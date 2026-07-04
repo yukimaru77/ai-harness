@@ -1,0 +1,8 @@
+[mcp_servers.test-wait]
+command = "node"
+args = ["/Users/nonaka/src/test-wait-mcp/dist/index.js"]
+enabled_tools = ["wait"]
+default_tools_approval_mode = "prompt"
+
+[mcp_servers.test-wait.tools.wait]
+approval_mode = "approve"

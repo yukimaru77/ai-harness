@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.nonaka.ai-harness.monitor</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/nonaka/.local/share/ai-harness/bin/ai-harness-monitor</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/nonaka/.local/share/ai-harness/obs/monitor.launchd.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/nonaka/.local/share/ai-harness/obs/monitor.launchd.out.log</string>
+	<key>Umask</key>
+	<integer>63</integer>
+</dict>
+</plist>

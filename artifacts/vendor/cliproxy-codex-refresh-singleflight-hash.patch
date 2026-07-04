@@ -1,0 +1,75 @@
+diff --git a/internal/auth/codex/openai_auth.go b/internal/auth/codex/openai_auth.go
+index 040703c..622b791 100644
+--- a/internal/auth/codex/openai_auth.go
++++ b/internal/auth/codex/openai_auth.go
+@@ -6,6 +6,8 @@ package codex
+ 
+ import (
+ 	"context"
++	"crypto/sha256"
++	"encoding/hex"
+ 	"encoding/json"
+ 	"fmt"
+ 	"io"
+@@ -37,6 +39,11 @@ type CodexAuth struct {
+ 
+ var codexRefreshGroup singleflight.Group
+ 
++func codexRefreshSingleflightKey(refreshToken string) string {
++	sum := sha256.Sum256([]byte(refreshToken))
++	return hex.EncodeToString(sum[:])
++}
++
+ // NewCodexAuth creates a new CodexAuth service instance.
+ // It initializes an HTTP client with proxy settings from the provided configuration.
+ func NewCodexAuth(cfg *config.Config) *CodexAuth {
+@@ -194,7 +201,7 @@ func (o *CodexAuth) RefreshTokens(ctx context.Context, refreshToken string) (*Co
+ 		ctx = context.Background()
+ 	}
+ 
+-	result, err, _ := codexRefreshGroup.Do(refreshToken, func() (interface{}, error) {
++	result, err, _ := codexRefreshGroup.Do(codexRefreshSingleflightKey(refreshToken), func() (interface{}, error) {
+ 		return o.refreshTokensSingleFlight(context.WithoutCancel(ctx), refreshToken)
+ 	})
+ 	if err != nil {
+diff --git a/internal/auth/codex/openai_auth_test.go b/internal/auth/codex/openai_auth_test.go
+index 20a02fd..21d56fd 100644
+--- a/internal/auth/codex/openai_auth_test.go
++++ b/internal/auth/codex/openai_auth_test.go
+@@ -2,6 +2,8 @@ package codex
+ 
+ import (
+ 	"context"
++	"crypto/sha256"
++	"encoding/hex"
+ 	"io"
+ 	"net/http"
+ 	"strings"
+@@ -24,6 +26,27 @@ func resetCodexRefreshGroupForTest() {
+ 	codexRefreshGroup = singleflight.Group{}
+ }
+ 
++func TestCodexRefreshSingleflightKey_UsesSHA256Hex(t *testing.T) {
++	const token = "sentinel-token-a"
++
++	got := codexRefreshSingleflightKey(token)
++	sum := sha256.Sum256([]byte(token))
++	want := hex.EncodeToString(sum[:])
++
++	if got != want {
++		t.Fatal("singleflight key is not the expected SHA-256 hex digest")
++	}
++	if got == token {
++		t.Fatal("singleflight key must not be the raw token")
++	}
++	if len(got) != sha256.Size*2 {
++		t.Fatalf("singleflight key length = %d, want %d", len(got), sha256.Size*2)
++	}
++	if got == codexRefreshSingleflightKey("sentinel-token-b") {
++		t.Fatal("different tokens unexpectedly produced the same test key")
++	}
++}
++
+ func TestRefreshTokensWithRetry_NonRetryableOnlyAttemptsOnce(t *testing.T) {
+ 	var calls int32
+ 	auth := &CodexAuth{

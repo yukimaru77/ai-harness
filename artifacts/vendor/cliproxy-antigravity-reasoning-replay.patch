@@ -1,0 +1,47 @@
+diff --git a/internal/runtime/executor/antigravity_reasoning_replay.go b/internal/runtime/executor/antigravity_reasoning_replay.go
+index 8276ead..d7775a5 100644
+--- a/internal/runtime/executor/antigravity_reasoning_replay.go
++++ b/internal/runtime/executor/antigravity_reasoning_replay.go
+@@ -422,9 +422,16 @@ func insertAntigravityReasoningReplayItems(payload []byte, items [][]byte) ([]by
+ 				if strings.TrimSpace(gjson.GetBytes(out, path).String()) != "" {
+ 					continue
+ 				}
++				updated, err := sjson.SetBytes(out, path, sig)
++				if err != nil {
++					continue
++				}
++				out = updated
++				changed = true
++				continue
+ 			}
+-			path := antigravityReplayPartWritePath(out, ci, pi) + ".thoughtSignature"
+-			updated, err := sjson.SetBytes(out, path, sig)
++			path := antigravityReplayPartWritePath(out, ci, pi)
++			updated, err := sjson.SetBytes(out, path, map[string]any{"thoughtSignature": sig})
+ 			if err != nil {
+ 				continue
+ 			}
+diff --git a/internal/runtime/executor/antigravity_reasoning_replay_test.go b/internal/runtime/executor/antigravity_reasoning_replay_test.go
+index b11f4f9..b6ecf98 100644
+--- a/internal/runtime/executor/antigravity_reasoning_replay_test.go
++++ b/internal/runtime/executor/antigravity_reasoning_replay_test.go
+@@ -118,7 +118,7 @@ func TestPrepareAntigravityGeminiReasoningReplayPayloadAppendsStaleThoughtSignat
+ 	internalcache.ClearAntigravityReasoningReplayCache()
+ 	t.Cleanup(internalcache.ClearAntigravityReasoningReplayCache)
+ 
+-	item := []byte(`{"type":"thought_signature","contentIndex":8,"partIndex":3,"thoughtSignature":"sig-text"}`)
++	item := []byte(`{"type":"thought_signature","contentIndex":8,"partIndex":3,"thoughtSignature":"sig-text-long-enough"}`)
+ 	internalcache.CacheAntigravityReasoningReplayItems("gemini-3-flash-agent", "session:sess-stale-text", [][]byte{item})
+ 
+ 	payload := []byte(`{"sessionId":"sess-stale-text","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]},{"role":"model","parts":[{"text":"visible answer"}]},{"role":"user","parts":[{"text":"next"}]}]}}`)
+@@ -139,8 +139,8 @@ func TestPrepareAntigravityGeminiReasoningReplayPayloadAppendsStaleThoughtSignat
+ 	if got := parts[0].Get("text").String(); got != "visible answer" {
+ 		t.Fatalf("text part = %q, want visible answer; body=%s", got, out)
+ 	}
+-	if got := parts[1].Get("thoughtSignature").String(); got != "sig-text" {
+-		t.Fatalf("thoughtSignature = %q, want sig-text; body=%s", got, out)
++	if got := parts[1].Get("thoughtSignature").String(); got != "sig-text-long-enough" {
++		t.Fatalf("thoughtSignature = %q, want sig-text-long-enough; body=%s", got, out)
+ 	}
+ }
+ 

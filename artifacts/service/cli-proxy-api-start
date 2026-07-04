@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL="$HOME/.local/libexec/ai-harness/cli-proxy-api"
+CONFIG_TEMPLATE="$HOME/.config/ai-harness/cliproxy/config.yaml"
+SECRET_FILE="$HOME/.config/ai-harness/secrets/zai-coding.key"
+RUNTIME_DIR="${TMPDIR:-/tmp}/ai-harness-cliproxy"
+OBS_DIR="$HOME/.local/share/ai-harness/obs"
+LIFECYCLE_LOG="$OBS_DIR/proxy-lifecycle.jsonl"
+
+# Best-effort lifecycle events: one JSON line per state change so restarts,
+# crashes, and exit codes are analyzable without reading launchd logs.
+# Schema documented in OBSERVABILITY.md.
+mkdir -p "$OBS_DIR" 2>/dev/null || true
+lifecycle() {
+  local event="$1"; shift || true
+  local extra="${1:-}"
+  local ts
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo unknown)"
+  {
+    printf '{"schema":1,"ts":"%s","component":"cli-proxy-api-start","event":"%s","pid":%s' "$ts" "$event" "$$"
+    [ -n "$extra" ] && printf ',%s' "$extra"
+    printf '}\n'
+  } >> "$LIFECYCLE_LOG" 2>/dev/null || true
+}
+
+lifecycle boot "\"binary\":\"$REAL\",\"config_template\":\"$CONFIG_TEMPLATE\""
+
+mkdir -p "$RUNTIME_DIR"
+chmod 700 "$RUNTIME_DIR"
+# Sweep rendered configs left behind by crashed runs; launchd runs one
+# instance of this service, so anything already here is stale.
+rm -f "$RUNTIME_DIR"/config.yaml.*
+TMP_CONFIG="$(mktemp "$RUNTIME_DIR/config.yaml.XXXXXX")"
+
+cleanup() {
+  rm -f "$TMP_CONFIG"
+}
+# Install the trap before rendering: the rendered config contains the Z.AI key
+# and must not survive a failed render (set -e exit skips later trap setup).
+trap cleanup EXIT
+
+if ! python3 - "$CONFIG_TEMPLATE" "$SECRET_FILE" "$TMP_CONFIG" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+template_path = Path(sys.argv[1])
+secret_path = Path(sys.argv[2])
+out_path = Path(sys.argv[3])
+
+template = template_path.read_text(encoding="utf-8")
+secret = secret_path.read_text(encoding="utf-8").strip()
+if not secret:
+    raise SystemExit("Z.AI Coding key file is empty")
+if "__ZAI_CODING_KEY__" not in template:
+    raise SystemExit("runtime config template is missing __ZAI_CODING_KEY__")
+
+rendered = template.replace('"__ZAI_CODING_KEY__"', json.dumps(secret))
+fd = os.open(out_path, os.O_WRONLY | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    handle.write(rendered)
+PY
+then
+  lifecycle render_failed
+  exit 71
+fi
+lifecycle render_ok
+
+"$REAL" -config "$TMP_CONFIG" "$@" &
+child=$!
+lifecycle proxy_spawned "\"proxy_pid\":$child"
+
+terminate() {
+  lifecycle terminating "\"proxy_pid\":$child"
+  kill "$child" 2>/dev/null || true
+  wait "$child" 2>/dev/null || true
+  cleanup
+  lifecycle terminated "\"proxy_pid\":$child"
+  exit 143
+}
+
+trap terminate INT TERM
+
+rc=0
+wait "$child" || rc=$?
+lifecycle proxy_exited "\"proxy_pid\":$child,\"rc\":$rc"
+exit "$rc"

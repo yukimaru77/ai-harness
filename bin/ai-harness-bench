@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# ai-harness-bench — run the SAME tiny prompt through every route and record
+# end-to-end wall-clock time + success, so route differences (and the current
+# bottleneck) are directly comparable. Appends one JSON line per route to
+# ~/.local/share/ai-harness/obs/bench.jsonl; ai-harness-stats picks it up.
+#
+# Usage:
+#   ai-harness-bench                          all 7 routes
+#   ai-harness-bench --routes claude-glm,codex-glm
+#   ai-harness-bench --note "after proxy restart"
+#
+# Cost note: each run sends one tiny prompt per route (uses the respective
+# plan quotas). Timeout per route: 180s.
+set -uo pipefail
+
+BIN_DIR="$HOME/.local/share/ai-harness/bin"
+OBS_DIR="$HOME/.local/share/ai-harness/obs"
+BENCH_LOG="$OBS_DIR/bench.jsonl"
+TIMEOUT_S=180
+ALL_ROUTES="claude claude-codex claude-glm codex codex-glm opencode-codex opencode-glm"
+ROUTES="$ALL_ROUTES"
+NOTE=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --routes) ROUTES="$(printf '%s' "${2:?}" | tr ',' ' ')"; shift 2 ;;
+    --routes=*) ROUTES="$(printf '%s' "${1#--routes=}" | tr ',' ' ')"; shift ;;
+    --note) NOTE="${2:-}"; shift 2 ;;
+    --note=*) NOTE="${1#--note=}"; shift ;;
+    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 64 ;;
+  esac
+done
+
+mkdir -p "$OBS_DIR"
+RUN_ID="$(uuidgen 2>/dev/null | tr 'A-Z' 'a-z' || echo "bench-$$")"
+WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-harness-bench.XXXXXX")"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'; }
+json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().strip())[1:-1])'; }
+
+run_route() {
+  local route="$1"
+  local token="BENCH-$RUN_ID-$route"
+  local prompt="Reply with exactly: $token"
+  local out="$WORKDIR/$route.out"
+  local cmd=()
+  case "$route" in
+    claude|claude-codex|claude-glm)
+      cmd=("$BIN_DIR/$route" --print "$prompt") ;;
+    codex|codex-glm)
+      cmd=("$BIN_DIR/$route" exec --skip-git-repo-check "$prompt") ;;
+    opencode-codex|opencode-glm)
+      cmd=("$BIN_DIR/$route" run "$prompt") ;;
+    *)
+      echo "unknown route: $route" >&2; return 64 ;;
+  esac
+
+  local t0 t1 rc=0 timed_out=false
+  t0="$(now_ms)"
+  ( cd "$WORKDIR" && "${cmd[@]}" >"$out" 2>&1 ) &
+  local pid=$!
+  ( sleep "$TIMEOUT_S" && kill -TERM "$pid" 2>/dev/null ) &
+  local watchdog=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+  t1="$(now_ms)"
+  [ "$rc" -ge 128 ] && timed_out=true
+
+  local ok=false
+  grep -qF "$token" "$out" 2>/dev/null && [ "$rc" -eq 0 ] && ok=true
+  local tail_line
+  tail_line="$(tail -n 1 "$out" 2>/dev/null | cut -c1-160 | json_escape)"
+  local ts
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+  printf '{"schema":1,"ts":"%s","run_id":"%s","route":"%s","ok":%s,"rc":%d,"timed_out":%s,"duration_ms":%d,"note":"%s","last_line":"%s"}\n' \
+    "$ts" "$RUN_ID" "$route" "$ok" "$rc" "$timed_out" "$((t1 - t0))" \
+    "$(printf '%s' "$NOTE" | json_escape)" "$tail_line" >> "$BENCH_LOG"
+
+  printf '%-16s %-4s rc=%-3d %6dms  %s\n' "$route" "$([ "$ok" = true ] && echo OK || echo FAIL)" "$rc" "$((t1 - t0))" \
+    "$(tail -n 1 "$out" 2>/dev/null | cut -c1-80)"
+}
+
+echo "AI Harness bench run_id=$RUN_ID (timeout ${TIMEOUT_S}s/route)"
+for route in $ROUTES; do
+  run_route "$route"
+done
+echo "appended to $BENCH_LOG — trend: ai-harness-stats"

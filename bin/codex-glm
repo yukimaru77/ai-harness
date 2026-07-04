@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+. "$HOME/.config/ai-harness/paths.env"
+. "$HOME/.local/share/ai-harness/lib/obs.sh"
+OBS_WRAPPER_VERSION=2
+obs_init codex-glm "$@"
+
+case "${1:-}" in
+  login|logout)
+    obs_event blocked_subcommand subcommand="${1:-}"
+    echo "Use ai-auth login openai. Native Codex login is intentionally not used by this wrapper." >&2
+    exit 64
+    ;;
+  update)
+    obs_event blocked_subcommand subcommand=update
+    echo "Codex auto-update is disabled for the pinned AI harness. Update the harness only after revalidation." >&2
+    exit 64
+    ;;
+  app|app-server|remote-control|mcp-server)
+    obs_event blocked_subcommand subcommand="${1:-}"
+    echo "This Codex mode is outside the pinned AI harness route and is intentionally blocked." >&2
+    exit 64
+    ;;
+  --version|-V|--help|-h|completion|mcp|features)
+    obs_event passthrough subcommand="${1:-}"
+    obs_run "$REAL_CODEX" "$@"
+    exit $?
+    ;;
+esac
+if [ "${1:-}" = "debug" ] && [ "${2:-}" = "models" ]; then
+  obs_event passthrough subcommand="debug models"
+  obs_run "$REAL_CODEX" "$@"
+  exit $?
+fi
+
+ACK="$AI_HARNESS_HOME/state/accept-zai-codex"
+if [ ! -f "$ACK" ]; then
+  obs_event fatal reason=acceptance_gate_closed file="$ACK"
+  cat >&2 <<'EOF'
+codex-glm is disabled until you explicitly accept the Z.AI Coding Plan/Codex CLI compatibility risk.
+Run: ai-harness-enable codex-glm
+EOF
+  exit 78
+fi
+
+CLIENT_KEY_FILE="$AI_HARNESS_HOME/secrets/cliproxy-client.key"
+[ -r "$CLIENT_KEY_FILE" ] || {
+  obs_event fatal reason=missing_client_key file="$CLIENT_KEY_FILE"
+  echo "missing CLIProxyAPI client key" >&2
+  exit 70
+}
+CLIENT_KEY="$(cat "$CLIENT_KEY_FILE")"
+obs_redact_add "$CLIENT_KEY"
+
+if ! obs_curl_probe cliproxy "$CLIPROXY_URL/v1/models" -H "Authorization: Bearer $CLIENT_KEY"; then
+  obs_event fatal reason=cliproxy_unreachable url="$CLIPROXY_URL"
+  echo "CLIProxyAPI is not running or not reachable. Run: ai-auth status" >&2
+  exit 69
+fi
+
+export CLIPROXY_API_KEY="$CLIENT_KEY"
+unset OPENAI_API_KEY OPENAI_BASE_URL CODEX_ACCESS_TOKEN
+
+obs_event route_resolved \
+  provider=cliproxy \
+  base_url="$CLIPROXY_URL/v1" \
+  model=zai/glm-5.2 \
+  real_bin="$REAL_CODEX"
+
+# http_headers puts the trace id on every proxied request so CLIProxyAPI
+# error dumps can be joined on x-ai-harness-trace.
+obs_run "$REAL_CODEX" \
+  --dangerously-bypass-approvals-and-sandbox \
+  --profile glm \
+  -c 'model="zai/glm-5.2"' \
+  -c 'model_provider="cliproxy"' \
+  -c "model_providers.cliproxy.http_headers.x-ai-harness-trace=\"$AI_HARNESS_TRACE_ID\"" \
+  -c 'model_reasoning_effort="high"' \
+  -c 'plan_mode_reasoning_effort="high"' \
+  -c 'model_context_window=1000000' \
+  -c 'model_auto_compact_token_limit=850000' \
+  -c 'features.enable_request_compression=false' \
+  "$@"

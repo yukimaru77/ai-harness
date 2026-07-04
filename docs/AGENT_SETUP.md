@@ -1,0 +1,180 @@
+# AGENT_SETUP.md — instructions for an AI agent reproducing this harness
+
+You are an AI coding agent (Claude Code, Codex CLI, OpenCode, or similar).
+Your job: set up this AI harness on the current machine so it matches the
+reference deployment, honoring the component selection in
+`setup-selection.json` (created by `./install.sh` in this repo; if it does not
+exist, run `./install.sh` or ask the user which components they want).
+
+Work autonomously. Ask the user only when a credential or an account-level
+decision is genuinely required.
+
+## Non-negotiable rules
+
+1. NEVER print, echo, or log API keys, OAuth tokens, or their file contents.
+2. Secrets live only in `~/.config/ai-harness/secrets/` (chmod 700 dir, 600 files).
+3. Back up any pre-existing file before overwriting it (`<file>.bak-<date>`).
+4. After every phase, verify before moving on. Finish with the checklist at
+   the bottom.
+5. macOS is the reference platform (launchd). On Linux, translate the two
+   LaunchAgents to systemd user units with the same commands and intervals.
+
+## What this harness is
+
+Wrapper commands that route several coding agents through selected model
+providers, with full observability (see `OBSERVABILITY.md`):
+
+| Command | Requires selection | Route |
+|---|---|---|
+| `claude` | claude | native Claude Code, transparent telemetry wrapper |
+| `claude-codex` | claude + codex | Claude Code → CLIProxyAPI (localhost:8317) → OpenAI/Codex OAuth, model `oauth-gpt-5.5` |
+| `claude-glm` | claude + glm | Claude Code → official Z.AI Anthropic-compatible endpoint (`https://api.z.ai/api/anthropic`), models via `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` |
+| `codex` | codex | native Codex CLI (ChatGPT OAuth), model gpt-5.5 |
+| `codex-glm` | codex + glm | Codex CLI → CLIProxyAPI → Z.AI GLM (`zai/glm-5.2`), gated by `ai-harness-enable codex-glm` |
+| `opencode-codex` | opencode + codex | OpenCode native OpenAI provider |
+| `opencode-glm` | opencode + glm | OpenCode native `zai-coding-plan` provider |
+
+CLIProxyAPI is needed iff (claude AND codex) or (codex AND glm) — i.e. any
+proxied route is selected.
+
+## Target layout
+
+```
+~/.local/share/ai-harness/        # this repo, cloned here (or symlinked)
+  bin/ lib/ artifacts/ docs/
+~/.config/ai-harness/
+  paths.env shell.sh
+  secrets/{cliproxy-client.key,cliproxy-management.key,zai-coding.key}
+  cliproxy/config.yaml            # rendered from artifacts/config/cliproxy/config.template.yaml
+  claude/ claude-codex/ claude-glm/ opencode/ state/
+~/.local/libexec/ai-harness/
+  cli-proxy-api                   # binary (see Phase 3)
+  cli-proxy-api-start             # from artifacts/service/
+~/Library/LaunchAgents/
+  com.<user>.ai-harness.cliproxy.plist   # from artifacts/service/, paths templated
+  com.<user>.ai-harness.monitor.plist
+~/.local/bin/                     # symlinks to bin/ wrappers
+```
+
+## Phase 0 — read the selection
+
+`setup-selection.json` example:
+
+```json
+{"schema":1,"agents":{"claude":true,"codex":true,"opencode":true},"glm":true}
+```
+
+Derive the route list from the table above. Skip every step below that only
+serves an unselected route.
+
+## Phase 1 — repo placement and shell
+
+1. If the repo is not already at `~/.local/share/ai-harness`, move/clone it there.
+2. Create `~/.config/ai-harness/shell.sh`:
+   ```bash
+   #!/usr/bin/env bash
+   case ":$PATH:" in
+     *":$HOME/.local/share/ai-harness/bin:"*) ;;
+     *) export PATH="$HOME/.local/share/ai-harness/bin:$PATH" ;;
+   esac
+   ```
+3. Append to `~/.bashrc` and `~/.zshrc` (idempotently):
+   `[ -f "$HOME/.config/ai-harness/shell.sh" ] && . "$HOME/.config/ai-harness/shell.sh"`
+4. Create `~/.config/ai-harness/paths.env` with the REAL binary paths on this
+   machine (`command -v` after installing the selected CLIs):
+   ```
+   AI_HARNESS_HOME=<home>/.config/ai-harness
+   AI_HARNESS_SHARE=<home>/.local/share/ai-harness
+   AI_HARNESS_LIBEXEC=<home>/.local/libexec/ai-harness
+   REAL_CLAUDE=<path to claude binary>
+   REAL_CODEX=<path to codex binary>
+   REAL_OPENCODE=<path to opencode binary>
+   CLIPROXY_URL=http://127.0.0.1:8317
+   ```
+   Install missing selected CLIs first (brew/npm per each tool's docs).
+5. Symlink the selected wrappers plus `ai-auth`, `ai-harness-*` from
+   `~/.local/bin/` to `bin/` (see the symlink list in `install.sh --check`).
+
+## Phase 2 — secrets
+
+Create `~/.config/ai-harness/secrets/` (700):
+
+- `cliproxy-client.key` — generate: `openssl rand -hex 32` (600). Only needed
+  if CLIProxyAPI is needed.
+- `cliproxy-management.key` — same.
+- `zai-coding.key` — only if `glm` is selected. Ask the user to create a
+  **GLM Coding Plan** API key at <https://z.ai/manage-apikey/apikey-list> and
+  paste it via a hidden prompt (`ai-auth rotate zai` does exactly this once
+  the wrappers are linked — prefer it).
+
+## Phase 3 — CLIProxyAPI (only if a proxied route is selected)
+
+1. Download the latest release binary for this OS/arch from
+   <https://github.com/router-for-me/CLIProxyAPI/releases> into
+   `~/.local/libexec/ai-harness/cli-proxy-api` (chmod 755).
+   The reference deployment ran v7.2.39 plus the three patches in
+   `artifacts/vendor/*.patch` (codex SSE handling, refresh single-flight,
+   antigravity reasoning replay). Newer upstream releases include equivalent
+   fixes; only build from source with those patches if you must pin v7.2.39.
+2. Render `~/.config/ai-harness/cliproxy/config.yaml` from
+   `artifacts/config/cliproxy/config.template.yaml`:
+   - `__MANAGEMENT_KEY__` → contents of `cliproxy-management.key`
+   - `__LOCAL_CLIENT_KEY__` → contents of `cliproxy-client.key`
+   - LEAVE `__ZAI_CODING_KEY__` as-is (rendered at service start by
+     `cli-proxy-api-start`). If `glm` is NOT selected, delete the
+     `openai-compatibility` block and create an empty `zai-coding.key` anyway
+     (the starter requires the file; alternatively adapt the starter).
+   - chmod 600.
+3. Install `artifacts/service/cli-proxy-api-start` to
+   `~/.local/libexec/ai-harness/` (chmod 700).
+4. Install both plists from `artifacts/service/` into `~/Library/LaunchAgents/`,
+   replacing every `/Users/nonaka` with this user's home and `com.nonaka.` with
+   `com.<this user>.`. Then `launchctl bootstrap gui/$(id -u) <plist>` each.
+5. Verify: `curl -fsS -H "Authorization: Bearer $(cat ~/.config/ai-harness/secrets/cliproxy-client.key)" http://127.0.0.1:8317/v1/models` returns JSON.
+
+## Phase 4 — provider auth (per selection)
+
+- claude: `claude` → complete the native Anthropic login (`/login` or
+  `claude auth login` depending on version).
+- codex native: `codex login` (ChatGPT OAuth).
+- codex OAuth **inside CLIProxyAPI** (needed for `claude-codex`):
+  `ai-auth login openai` — opens a browser, registers the credential in the
+  proxy's auth dir.
+- opencode: `opencode auth login` / `opencode providers login openai`, and the
+  `zai-coding-plan` provider key if glm is selected (OpenCode reads
+  `ZAI_CODING_API_KEY` from the wrapper, so usually nothing extra is needed).
+- codex-glm gate: run `ai-harness-enable codex-glm` and let the USER type
+  ACCEPT (do not auto-accept: it is an explicit risk acknowledgment).
+
+## Phase 5 — per-agent config
+
+- Claude settings files are already in `artifacts/config/claude/`; copy to
+  `~/.config/ai-harness/claude/`. Create empty dedicated config dirs
+  `~/.config/ai-harness/claude-codex/` and `claude-glm/`.
+- Codex profile: copy `artifacts/config/codex/glm.config.toml` to
+  `~/.codex/glm.config.toml` (only if codex+glm).
+- OpenCode configs: copy `artifacts/config/opencode/{codex,glm}.json` to
+  `~/.config/ai-harness/opencode/`.
+- IMPORTANT model-name rule learned in production: model names with a `[1m]`
+  suffix are ONLY valid via `ANTHROPIC_DEFAULT_*_MODEL` mapping, never as a
+  direct `--model`/settings model value. The shipped wrappers already encode
+  this — do not "simplify" them.
+
+## Phase 6 — verify (all selected routes)
+
+```bash
+./install.sh --check          # structural check: files, perms, symlinks, agents
+ai-auth status                # every selected credential shows as present/ok
+ai-harness-doctor             # end-to-end diagnostic
+ai-harness-monitor            # one probe run; inspect ~/.local/share/ai-harness/obs/health.jsonl
+ai-harness-bench --routes <selected,routes> --note "initial setup"
+```
+
+Every benched route must print OK. If one fails, follow the runbook in
+`OBSERVABILITY.md` (it maps each failure signature to its cause), fix, rerun.
+
+## Phase 7 — report
+
+Tell the user: which routes are live, where telemetry lands (`obs/`), the two
+LaunchAgents' names, and that `ai-harness-stats` / `ai-harness-bench` exist.
+Do not include any secret material in the report.

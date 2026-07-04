@@ -1,6 +1,31 @@
 # AI Harness
 
-This directory contains the installed AI coding harness and deliverable artifacts for `/Users/nonaka/Downloads/AI_HARNESS_IMPLEMENTATION_SPEC_JA.md`.
+Multi-provider harness for coding agents: run Claude Code, Codex CLI, and
+OpenCode against their native providers, OpenAI/Codex OAuth via a local
+reverse proxy (CLIProxyAPI), and Z.AI GLM — with per-invocation tracing,
+health monitoring, and cross-route benchmarking built in
+(see `OBSERVABILITY.md`).
+
+## Quick start (new machine)
+
+```bash
+git clone https://github.com/yukimaru77/ai-harness.git ~/.local/share/ai-harness
+cd ~/.local/share/ai-harness
+./install.sh        # pick agents: claude / codex / opencode, GLM yes/no
+```
+
+Then run any AI coding agent in this directory and tell it:
+
+> Read docs/AGENT_SETUP.md and set up the AI harness on this machine
+> according to setup-selection.json. Never display API keys or tokens.
+
+The agent installs CLIs, the proxy, LaunchAgents, and walks you through the
+logins. GLM routes need a GLM Coding Plan API key:
+<https://z.ai/manage-apikey/apikey-list> (you paste it into a hidden prompt,
+never into the chat).
+
+On an already-installed machine, `./install.sh --check` verifies and repairs
+files, permissions, symlinks, and LaunchAgents.
 
 ## Commands
 

@@ -62,7 +62,7 @@ openai-compatibility:
       - name: "glm-5.2"
         alias: "glm-5.2"
         thinking:
-          levels: ["high"]
+          levels: ["max"]
 
 oauth-model-alias:
   codex:
@@ -87,4 +87,4 @@ payload:
           protocol: "openai"
       params:
         "thinking.type": "enabled"
-        "reasoning_effort": "high"
+        "reasoning_effort": "max"

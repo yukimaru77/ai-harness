@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# ai-harness-agent — manage which skills and MCP servers the harness routes
+# see (cc-switch style: central store -> symlink selection).
+#
+#   Central skill store : ~/.agents/skills           (shared with cc-switch)
+#   Selection           : ~/.agent-fusion/skills     (symlinks only; default empty)
+#   MCP selection       : ~/.agent-fusion/mcp.json   (default: no servers)
+#
+# Only what is linked/listed here reaches claude-fusion, claude-codex,
+# claude-glm, codex-fusion, and codex-glm. The user's normal ~/.claude and
+# ~/.codex are untouched.
+#
+# Usage:
+#   ai-harness-agent list                 show store vs selection
+#   ai-harness-agent add <skill>...       symlink skill(s) from the store
+#   ai-harness-agent remove <skill>...    remove from selection
+#   ai-harness-agent mcp                  open the MCP selection file
+#   ai-harness-agent sync                 re-wire agent homes (idempotent)
+set -euo pipefail
+
+STORE="$HOME/.agents/skills"
+AF="$HOME/.agent-fusion"
+SEL="$AF/skills"
+
+usage() { sed -n '2,17p' "$0"; exit 64; }
+
+sync() {
+  mkdir -p "$SEL" "$AF/claude" "$AF/codex" "$AF/xdg/opencode"
+  [ -f "$AF/mcp.json" ] || printf '{\n  "mcpServers": {}\n}\n' > "$AF/mcp.json"
+  ln -sfn "$SEL" "$AF/claude/skills"
+  [ -e "$HOME/.claude/CLAUDE.md" ] && ln -sfn "$HOME/.claude/CLAUDE.md" "$AF/claude/CLAUDE.md"
+  # Share the native Anthropic login with the user's ~/.claude (per-config-dir
+  # credential file) and mirror the account fields so /login is not required.
+  [ -e "$HOME/.claude/.credentials.json" ] && ln -sfn "$HOME/.claude/.credentials.json" "$AF/claude/.credentials.json"
+  [ -f "$AF/claude/.claude.json" ] || printf '{"hasCompletedOnboarding": true}\n' > "$AF/claude/.claude.json"
+  if [ -f "$HOME/.claude.json" ] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$HOME/.claude.json" "$AF/claude/.claude.json" <<'PY'
+import json, sys
+src = json.load(open(sys.argv[1]))
+try:
+    dst = json.load(open(sys.argv[2]))
+except Exception:
+    dst = {}
+for k in ("oauthAccount", "userID", "hasCompletedOnboarding"):
+    if k in src:
+        dst[k] = src[k]
+dst.setdefault("hasCompletedOnboarding", True)
+json.dump(dst, open(sys.argv[2], "w"), indent=2)
+PY
+  fi
+  ln -sfn "$HOME/.codex/auth.json" "$AF/codex/auth.json"
+  ln -sfn "$SEL" "$AF/codex/skills"
+  ln -sfn "$SEL" "$AF/xdg/opencode/skills"
+  # Drop dangling selection links (skill removed from the store)
+  local link
+  for link in "$SEL"/*; do
+    [ -L "$link" ] && [ ! -e "$link" ] && rm -f "$link" && echo "removed dangling: $(basename "$link")"
+  done
+  echo "sync ok"
+}
+
+case "${1:-}" in
+  list)
+    echo "Store ($STORE):"
+    local_sel="$(ls "$SEL" 2>/dev/null || true)"
+    for s in "$STORE"/*/; do
+      name="$(basename "$s")"
+      if [ -e "$SEL/$name" ]; then mark="[selected]"; else mark="[ ]"; fi
+      printf '  %-10s %s\n' "$mark" "$name"
+    done
+    echo "MCP selection ($AF/mcp.json):"
+    python3 -c "import json;d=json.load(open('$AF/mcp.json'));ks=list(d.get('mcpServers',{}));print('  ' + (', '.join(ks) if ks else '(none)'))"
+    ;;
+  add)
+    shift; [ "$#" -ge 1 ] || usage
+    for name in "$@"; do
+      src="$STORE/$name"
+      [ -d "$src" ] || { echo "not in store: $name" >&2; exit 66; }
+      ln -sfn "$src" "$SEL/$name"
+      echo "selected: $name"
+    done
+    ;;
+  remove)
+    shift; [ "$#" -ge 1 ] || usage
+    for name in "$@"; do
+      rm -f "$SEL/$name"
+      echo "deselected: $name"
+    done
+    ;;
+  mcp)
+    echo "Edit $AF/mcp.json (mcpServers map, same format as .claude.json / --mcp-config)."
+    "${EDITOR:-open -t}" "$AF/mcp.json"
+    ;;
+  sync)
+    sync
+    ;;
+  *)
+    usage
+    ;;
+esac

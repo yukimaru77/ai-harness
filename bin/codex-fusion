@@ -9,6 +9,8 @@ unset CLIPROXY_API_KEY OPENAI_API_KEY OPENAI_BASE_URL
 
 obs_event route_resolved provider=native_codex_oauth model=gpt-5.5 real_bin="$REAL_CODEX"
 
+export CODEX_HOME="$HOME/.agent-fusion/codex"
+
 obs_run "$REAL_CODEX" \
   --dangerously-bypass-approvals-and-sandbox \
   -c 'model="gpt-5.5"' \

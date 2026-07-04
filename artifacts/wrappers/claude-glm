@@ -29,11 +29,14 @@ obs_curl_probe zai_anthropic "https://api.z.ai/api/anthropic/v1/models" -H "x-ap
 obs_event route_resolved \
   base_url="$ANTHROPIC_BASE_URL" \
   model_mapping="opus/sonnet=glm-5.2[1m],haiku=glm-4.7" \
-  config_dir=shared-default \
+  config_dir=agent-fusion \
   real_bin="$REAL_CLAUDE"
+
+export CLAUDE_CONFIG_DIR="$HOME/.agent-fusion/claude"
 
 obs_run "$REAL_CLAUDE" \
   --settings "$AI_HARNESS_HOME/claude/glm-settings.json" \
   --model opus \
+  --strict-mcp-config --mcp-config "$HOME/.agent-fusion/mcp.json" \
   --dangerously-skip-permissions \
   "$@"

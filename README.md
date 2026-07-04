@@ -50,6 +50,7 @@ Source `/Users/nonaka/.config/ai-harness/shell.sh` or open a new shell, then use
 - `ai-harness-monitor`: one-shot health probe (also runs every 5 min via LaunchAgent `com.nonaka.ai-harness.monitor`).
 - `ai-harness-stats`: telemetry analysis — per-route error rates, latency percentiles, upstream health, proxy restarts. See `OBSERVABILITY.md` for schemas, jq recipes, and the failure runbook.
 - `ai-harness-bench`: same tiny prompt through all 7 routes, timed — the direct route-vs-route comparison (`--routes a,b` to subset, `--note` to label).
+- `ai-harness-agent`: cc-switch-style skill/MCP selection for the harness routes. Central store `~/.agents/skills` → symlink selection `~/.agent-fusion/skills` (default: NOTHING selected — harness routes see no skills and no MCP servers). `list` / `add <skill>` / `remove <skill>` / `mcp` (edit `~/.agent-fusion/mcp.json`) / `sync`. The user's normal `~/.claude` and `~/.codex` keep their full skill/MCP setup.
 
 ## Paths
 

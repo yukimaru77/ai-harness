@@ -5,6 +5,7 @@ set -euo pipefail
 OBS_WRAPPER_VERSION=2
 obs_init opencode-codex "$@"
 
+export XDG_CONFIG_HOME="$HOME/.agent-fusion/xdg"
 export OPENCODE_CONFIG="$AI_HARNESS_HOME/opencode/codex.json"
 unset OPENAI_API_KEY OPENAI_BASE_URL CLIPROXY_API_KEY
 

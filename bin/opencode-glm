@@ -10,6 +10,7 @@ ZAI_KEY_FILE="$AI_HARNESS_HOME/secrets/zai-coding.key"
   echo "missing Z.AI Coding key" >&2
   exit 70
 }
+export XDG_CONFIG_HOME="$HOME/.agent-fusion/xdg"
 export OPENCODE_CONFIG="$AI_HARNESS_HOME/opencode/glm.json"
 export ZAI_CODING_API_KEY="$(cat "$ZAI_KEY_FILE")"
 obs_redact_add "$ZAI_CODING_API_KEY"

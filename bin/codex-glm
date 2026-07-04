@@ -69,6 +69,8 @@ obs_event route_resolved \
 
 # http_headers puts the trace id on every proxied request so CLIProxyAPI
 # error dumps can be joined on x-ai-harness-trace.
+export CODEX_HOME="$HOME/.agent-fusion/codex"
+
 obs_run "$REAL_CODEX" \
   --dangerously-bypass-approvals-and-sandbox \
   --profile glm \

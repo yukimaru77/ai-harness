@@ -36,11 +36,14 @@ unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL
 obs_event route_resolved \
   base_url="$CLIPROXY_URL" \
   model=oauth-gpt-5.5 \
-  config_dir=shared-default \
+  config_dir=agent-fusion \
   real_bin="$REAL_CLAUDE"
+
+export CLAUDE_CONFIG_DIR="$HOME/.agent-fusion/claude"
 
 obs_run "$REAL_CLAUDE" \
   --settings "$AI_HARNESS_HOME/claude/codex-settings.json" \
   --model oauth-gpt-5.5 \
+  --strict-mcp-config --mcp-config "$HOME/.agent-fusion/mcp.json" \
   --dangerously-skip-permissions \
   "$@"

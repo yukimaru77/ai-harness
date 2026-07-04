@@ -151,9 +151,17 @@ Create `~/.config/ai-harness/secrets/` (700):
 ## Phase 5 — per-agent config
 
 - Claude settings files are already in `artifacts/config/claude/`; copy to
-  `~/.config/ai-harness/claude/`. All claude-* routes share the user's normal
-  `~/.claude` environment (MCP, skills, sessions); the per-route `--settings`
-  file and env only switch the model/provider.
+  `~/.config/ai-harness/claude/`.
+- Skill/MCP selection (cc-switch style): run `ai-harness-agent sync` to create
+  `~/.agent-fusion/` — `skills/` (symlink selection from the `~/.agents/skills`
+  central store; default empty), `mcp.json` (default: no servers), `claude/`
+  (CLAUDE_CONFIG_DIR for claude-* routes; shares the user's OAuth via a
+  `.credentials.json` symlink and mirrors `CLAUDE.md`), `codex/` (CODEX_HOME
+  for codex-* routes; shares `auth.json` via symlink), `xdg/opencode/`
+  (XDG_CONFIG_HOME for opencode routes). Harness routes therefore see ONLY the
+  selected skills/MCP; the user's normal `~/.claude`/`~/.codex` are untouched.
+  Select skills with `ai-harness-agent add <name>`; MCP servers by editing
+  `~/.agent-fusion/mcp.json`.
 - Codex profile: copy `artifacts/config/codex/glm.config.toml` to
   `~/.codex/glm.config.toml` (only if codex+glm).
 - OpenCode configs: copy `artifacts/config/opencode/{codex,glm}.json` to

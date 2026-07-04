@@ -184,7 +184,7 @@ check() {
   { [ "$want_opencode" = true ] && [ "$want_glm" = true ]; } && require_file "$BIN_DIR/opencode-glm"
   local c
   for c in ai-auth ai-harness-doctor ai-harness-enable ai-harness-rollback \
-           ai-harness-monitor ai-harness-stats ai-harness-bench; do
+           ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent; do
     require_file "$BIN_DIR/$c"
   done
   [ -n "$MONITOR_PLIST" ] || { echo "missing monitor LaunchAgent plist" >&2; exit 66; }
@@ -195,7 +195,7 @@ check() {
   local LOCAL_BIN="$HOME_DIR/.local/bin" cmd link target
   for cmd in claude-fusion codex-fusion claude-codex claude-glm codex-glm opencode-codex opencode-glm \
              ai-auth ai-harness-doctor ai-harness-enable ai-harness-rollback \
-             ai-harness-monitor ai-harness-stats ai-harness-bench; do
+             ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent; do
     [ -e "$BIN_DIR/$cmd" ] || continue
     link="$LOCAL_BIN/$cmd"
     target="$BIN_DIR/$cmd"

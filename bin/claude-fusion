@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
-# claude-fusion — transparent telemetry wrapper for the native Claude Code
-# route. The plain `claude` command is deliberately left untouched (daily
-# driver, updated often).
-# Adds NO flags and NO env overrides — behavior is identical to running
-# REAL_CLAUDE directly; the only side effect is obs events (AI_HARNESS_OBS=0
-# to disable). This exists so `claude-fusion` shows up in ai-harness-stats next to
-# the other six routes.
+# claude-fusion — native Anthropic OAuth route with its own pinned profile:
+# main model Opus 4.8, background/fast model Sonnet 5, effort high
+# (fusion-settings.json). The plain `claude` command is deliberately left
+# untouched (daily driver, updated often) and keeps the user's own settings.
 set -euo pipefail
 . "$HOME/.config/ai-harness/paths.env"
 . "$HOME/.local/share/ai-harness/lib/obs.sh"
-OBS_WRAPPER_VERSION=2
+OBS_WRAPPER_VERSION=3
 obs_init claude-fusion "$@"
 
-obs_event route_resolved provider=native_anthropic_oauth real_bin="$REAL_CLAUDE"
+obs_event route_resolved \
+  provider=native_anthropic_oauth \
+  model=claude-opus-4-8 \
+  fast_model=claude-sonnet-5 \
+  real_bin="$REAL_CLAUDE"
 
-obs_run "$REAL_CLAUDE" "$@"
+obs_run "$REAL_CLAUDE" \
+  --settings "$AI_HARNESS_HOME/claude/fusion-settings.json" \
+  --model claude-opus-4-8 \
+  --dangerously-skip-permissions \
+  "$@"

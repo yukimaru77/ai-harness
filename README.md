@@ -27,6 +27,11 @@ never into the chat).
 On an already-installed machine, `./install.sh --check` verifies and repairs
 files, permissions, symlinks, and LaunchAgents.
 
+Stuck, or found a bug? Open a detailed issue at
+<https://github.com/yukimaru77/ai-harness/issues> — include your
+`setup-selection.json`, OS/CLI versions, the exact error (with all keys and
+tokens redacted), and `ai-harness-stats --errors` output.
+
 ## Commands
 
 Source `/Users/nonaka/.config/ai-harness/shell.sh` or open a new shell, then use:

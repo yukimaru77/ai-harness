@@ -178,3 +178,20 @@ Every benched route must print OK. If one fails, follow the runbook in
 Tell the user: which routes are live, where telemetry lands (`obs/`), the two
 LaunchAgents' names, and that `ai-harness-stats` / `ai-harness-bench` exist.
 Do not include any secret material in the report.
+
+## If you get stuck or find a bug
+
+File a GitHub issue at <https://github.com/yukimaru77/ai-harness/issues>
+(e.g. `gh issue create -R yukimaru77/ai-harness`) with:
+
+- which Phase and step failed, and the selection from `setup-selection.json`
+- OS / arch, versions of the involved CLIs (`claude --version`, etc.)
+- the exact error output — **redact every key, token, and Authorization
+  header before pasting** (the wrappers' obs redaction does not apply to
+  text you copy manually)
+- relevant telemetry: `ai-harness-stats --errors` output and the matching
+  `obs/events.jsonl` lines (already redacted by design)
+- what you tried from the `OBSERVABILITY.md` runbook and the result
+
+Then continue with any remaining phases that do not depend on the blocked
+step, and tell the user about the filed issue.

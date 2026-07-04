@@ -17,7 +17,6 @@ obs_redact_add "$ZAI_KEY"
 # Official Z.AI Claude Code route (https://docs.z.ai/devpack/tool/claude):
 # base URL + auth token here, model role mapping via
 # ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL in glm-settings.json.
-export CLAUDE_CONFIG_DIR="$AI_HARNESS_HOME/claude-glm"
 export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
 export ANTHROPIC_AUTH_TOKEN="$ZAI_KEY"
 export ANTHROPIC_CUSTOM_HEADERS="x-ai-harness-trace: $AI_HARNESS_TRACE_ID"
@@ -30,7 +29,7 @@ obs_curl_probe zai_anthropic "https://api.z.ai/api/anthropic/v1/models" -H "x-ap
 obs_event route_resolved \
   base_url="$ANTHROPIC_BASE_URL" \
   model_mapping="opus/sonnet=glm-5.2[1m],haiku=glm-4.7" \
-  config_dir="$CLAUDE_CONFIG_DIR" \
+  config_dir=shared-default \
   real_bin="$REAL_CLAUDE"
 
 obs_run "$REAL_CLAUDE" \

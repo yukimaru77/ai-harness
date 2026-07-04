@@ -46,7 +46,7 @@ proxied route is selected.
   paths.env shell.sh
   secrets/{cliproxy-client.key,cliproxy-management.key,zai-coding.key}
   cliproxy/config.yaml            # rendered from artifacts/config/cliproxy/config.template.yaml
-  claude/ claude-codex/ claude-glm/ opencode/ state/
+  claude/ opencode/ state/
 ~/.local/libexec/ai-harness/
   cli-proxy-api                   # binary (see Phase 3)
   cli-proxy-api-start             # from artifacts/service/
@@ -149,8 +149,9 @@ Create `~/.config/ai-harness/secrets/` (700):
 ## Phase 5 — per-agent config
 
 - Claude settings files are already in `artifacts/config/claude/`; copy to
-  `~/.config/ai-harness/claude/`. Create empty dedicated config dirs
-  `~/.config/ai-harness/claude-codex/` and `claude-glm/`.
+  `~/.config/ai-harness/claude/`. All claude-* routes share the user's normal
+  `~/.claude` environment (MCP, skills, sessions); the per-route `--settings`
+  file and env only switch the model/provider.
 - Codex profile: copy `artifacts/config/codex/glm.config.toml` to
   `~/.codex/glm.config.toml` (only if codex+glm).
 - OpenCode configs: copy `artifacts/config/opencode/{codex,glm}.json` to

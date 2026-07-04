@@ -20,7 +20,6 @@ if ! obs_curl_probe cliproxy "$CLIPROXY_URL/v1/models" -H "Authorization: Bearer
   exit 69
 fi
 
-export CLAUDE_CONFIG_DIR="$AI_HARNESS_HOME/claude-codex"
 export ANTHROPIC_BASE_URL="$CLIPROXY_URL"
 export ANTHROPIC_AUTH_TOKEN="$CLIENT_KEY"
 # Pin every model role: without these, Claude Code falls back to Anthropic
@@ -37,7 +36,7 @@ unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL
 obs_event route_resolved \
   base_url="$CLIPROXY_URL" \
   model=oauth-gpt-5.5 \
-  config_dir="$CLAUDE_CONFIG_DIR" \
+  config_dir=shared-default \
   real_bin="$REAL_CLAUDE"
 
 obs_run "$REAL_CLAUDE" \

@@ -181,7 +181,11 @@ Do not include any secret material in the report.
 
 ## If you get stuck or find a bug
 
-File a GitHub issue at <https://github.com/yukimaru77/ai-harness/issues>
+**First ask the user for permission** — e.g. "May I file an issue on the
+ai-harness repo with the (redacted) details?" — and show them what you intend
+to post. Filing an issue publishes text to a public repository, so never do
+it unasked. If they agree, file it at
+<https://github.com/yukimaru77/ai-harness/issues>
 (e.g. `gh issue create -R yukimaru77/ai-harness`) with:
 
 - which Phase and step failed, and the selection from `setup-selection.json`
@@ -194,4 +198,5 @@ File a GitHub issue at <https://github.com/yukimaru77/ai-harness/issues>
 - what you tried from the `OBSERVABILITY.md` runbook and the result
 
 Then continue with any remaining phases that do not depend on the blocked
-step, and tell the user about the filed issue.
+step, and tell the user about the filed issue (or, if they declined, hand
+them the prepared issue text so they can post it themselves).

@@ -22,7 +22,9 @@ decision is genuinely required.
 ## What this harness is
 
 Wrapper commands that route several coding agents through selected model
-providers, with full observability (see `OBSERVABILITY.md`):
+providers, with full observability (see `OBSERVABILITY.md`). The plain
+`claude` and `codex` commands are OUT OF SCOPE: never wrap, monitor, modify,
+or troubleshoot them from this repo — it owns only the commands below:
 
 | Command | Requires selection | Route |
 |---|---|---|

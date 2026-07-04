@@ -36,7 +36,7 @@ tokens redacted), and `ai-harness-stats --errors` output.
 
 Source `/Users/nonaka/.config/ai-harness/shell.sh` or open a new shell, then use:
 
-- `claude` / `codex`: NOT wrapped — your daily-driver commands stay exactly as they are.
+- `claude` / `codex`: OUT OF SCOPE for this repo — not wrapped, not monitored, not benched. Your daily-driver commands stay exactly as they are; this harness is responsible only for the commands below.
 - `claude-fusion`: native Anthropic OAuth with a pinned profile — Opus 4.8 main, Sonnet 5 fast/background, effort high (`fusion-settings.json`). Independent of the plain `claude` settings.
 - `claude-codex`: Claude Code through CLIProxyAPI and OpenAI/Codex OAuth, GPT-5.5, high effort. Shares your normal `~/.claude` environment (MCP, skills, sessions) — only the model/provider changes.
 - `claude-glm`: Claude Code through Z.AI Anthropic-compatible GLM-5.2, high effort. Shares your normal `~/.claude` environment — only the model/provider changes.

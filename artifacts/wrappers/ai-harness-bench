@@ -17,7 +17,7 @@ BIN_DIR="$HOME/.local/share/ai-harness/bin"
 OBS_DIR="$HOME/.local/share/ai-harness/obs"
 BENCH_LOG="$OBS_DIR/bench.jsonl"
 TIMEOUT_S=180
-ALL_ROUTES="claude claude-codex claude-glm codex codex-glm opencode-codex opencode-glm"
+ALL_ROUTES="claude-fusion claude-codex claude-glm codex-fusion codex-glm opencode-codex opencode-glm"
 ROUTES="$ALL_ROUTES"
 NOTE=""
 
@@ -47,9 +47,9 @@ run_route() {
   local out="$WORKDIR/$route.out"
   local cmd=()
   case "$route" in
-    claude|claude-codex|claude-glm)
+    claude-fusion|claude-codex|claude-glm)
       cmd=("$BIN_DIR/$route" --print "$prompt") ;;
-    codex|codex-glm)
+    codex-fusion|codex-glm)
       cmd=("$BIN_DIR/$route" exec --skip-git-repo-check "$prompt") ;;
     opencode-codex|opencode-glm)
       cmd=("$BIN_DIR/$route" run "$prompt") ;;

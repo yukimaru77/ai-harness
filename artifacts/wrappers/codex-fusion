@@ -3,7 +3,7 @@ set -euo pipefail
 . "$HOME/.config/ai-harness/paths.env"
 . "$HOME/.local/share/ai-harness/lib/obs.sh"
 OBS_WRAPPER_VERSION=2
-obs_init codex "$@"
+obs_init codex-fusion "$@"
 
 unset CLIPROXY_API_KEY OPENAI_API_KEY OPENAI_BASE_URL
 

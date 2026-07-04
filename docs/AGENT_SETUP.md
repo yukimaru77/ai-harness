@@ -26,10 +26,10 @@ providers, with full observability (see `OBSERVABILITY.md`):
 
 | Command | Requires selection | Route |
 |---|---|---|
-| `claude` | claude | native Claude Code, transparent telemetry wrapper |
+| `claude-fusion` | claude | native Claude Code, transparent telemetry wrapper (the plain `claude` command is NEVER wrapped or symlinked — it is the user's daily driver) |
 | `claude-codex` | claude + codex | Claude Code → CLIProxyAPI (localhost:8317) → OpenAI/Codex OAuth, model `oauth-gpt-5.5` |
 | `claude-glm` | claude + glm | Claude Code → official Z.AI Anthropic-compatible endpoint (`https://api.z.ai/api/anthropic`), models via `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` |
-| `codex` | codex | native Codex CLI (ChatGPT OAuth), model gpt-5.5 |
+| `codex-fusion` | codex | native Codex CLI (ChatGPT OAuth), model gpt-5.5, high effort, telemetry (plain `codex` likewise untouched) |
 | `codex-glm` | codex + glm | Codex CLI → CLIProxyAPI → Z.AI GLM (`zai/glm-5.2`), gated by `ai-harness-enable codex-glm` |
 | `opencode-codex` | opencode + codex | OpenCode native OpenAI provider |
 | `opencode-glm` | opencode + glm | OpenCode native `zai-coding-plan` provider |

@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Transparent telemetry wrapper for the native Claude Code route.
+# claude-fusion — transparent telemetry wrapper for the native Claude Code
+# route. The plain `claude` command is deliberately left untouched (daily
+# driver, updated often).
 # Adds NO flags and NO env overrides — behavior is identical to running
 # REAL_CLAUDE directly; the only side effect is obs events (AI_HARNESS_OBS=0
-# to disable). This exists so `claude` shows up in ai-harness-stats next to
+# to disable). This exists so `claude-fusion` shows up in ai-harness-stats next to
 # the other six routes.
 set -euo pipefail
 . "$HOME/.config/ai-harness/paths.env"
 . "$HOME/.local/share/ai-harness/lib/obs.sh"
 OBS_WRAPPER_VERSION=2
-obs_init claude "$@"
+obs_init claude-fusion "$@"
 
 obs_event route_resolved provider=native_anthropic_oauth real_bin="$REAL_CLAUDE"
 

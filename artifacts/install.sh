@@ -83,10 +83,10 @@ wizard() {
   fi
 
   local routes=()
-  $want_claude && routes+=(claude)
+  $want_claude && routes+=(claude-fusion)
   $want_claude && $want_codex && routes+=(claude-codex)
   $want_claude && $want_glm && routes+=(claude-glm)
-  $want_codex && routes+=(codex)
+  $want_codex && routes+=(codex-fusion)
   $want_codex && $want_glm && routes+=(codex-glm)
   $want_opencode && $want_codex && routes+=(opencode-codex)
   $want_opencode && $want_glm && routes+=(opencode-glm)
@@ -175,10 +175,10 @@ check() {
     [ -n "$PLIST" ] || { echo "missing cliproxy LaunchAgent plist" >&2; exit 66; }
   fi
   [ "$want_glm" = true ] && require_file "$HARNESS_HOME/secrets/zai-coding.key"
-  [ "$want_claude" = true ] && require_file "$BIN_DIR/claude"
+  [ "$want_claude" = true ] && require_file "$BIN_DIR/claude-fusion"
   { [ "$want_claude" = true ] && [ "$want_codex" = true ]; } && require_file "$BIN_DIR/claude-codex"
   { [ "$want_claude" = true ] && [ "$want_glm" = true ]; } && require_file "$BIN_DIR/claude-glm"
-  [ "$want_codex" = true ] && require_file "$BIN_DIR/codex"
+  [ "$want_codex" = true ] && require_file "$BIN_DIR/codex-fusion"
   { [ "$want_codex" = true ] && [ "$want_glm" = true ]; } && require_file "$BIN_DIR/codex-glm"
   { [ "$want_opencode" = true ] && [ "$want_codex" = true ]; } && require_file "$BIN_DIR/opencode-codex"
   { [ "$want_opencode" = true ] && [ "$want_glm" = true ]; } && require_file "$BIN_DIR/opencode-glm"
@@ -190,11 +190,10 @@ check() {
   [ -n "$MONITOR_PLIST" ] || { echo "missing monitor LaunchAgent plist" >&2; exit 66; }
 
   # Keep ~/.local/bin symlinks pointing at the harness wrappers so the commands
-  # work in shells that do not source shell.sh. `claude` links to the harness
-  # wrapper (transparent, telemetry only). Never touch `codex` or `opencode`
-  # there: those names may belong to other tooling / the real binary.
+  # work in shells that do not source shell.sh. NEVER manage `claude`, `codex`,
+  # or `opencode` there: those are the user's daily-driver commands.
   local LOCAL_BIN="$HOME_DIR/.local/bin" cmd link target
-  for cmd in claude claude-codex claude-glm codex-glm opencode-codex opencode-glm \
+  for cmd in claude-fusion codex-fusion claude-codex claude-glm codex-glm opencode-codex opencode-glm \
              ai-auth ai-harness-doctor ai-harness-enable ai-harness-rollback \
              ai-harness-monitor ai-harness-stats ai-harness-bench; do
     [ -e "$BIN_DIR/$cmd" ] || continue

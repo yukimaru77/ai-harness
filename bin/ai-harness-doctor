@@ -17,7 +17,7 @@ if [ -r "$AI_HARNESS_HOME/secrets/cliproxy-client.key" ]; then
   curl -fsS -H "Authorization: Bearer $key" "$CLIPROXY_URL/v1/models" | jq -r '.data[]?.id // empty' | sort || true
 fi
 echo "PATH command resolution:"
-for c in claude claude-codex claude-glm codex codex-glm opencode-codex opencode-glm ai-auth ai-harness-doctor ai-harness-rollback ai-harness-monitor ai-harness-stats; do
+for c in claude claude-fusion claude-codex claude-glm codex codex-fusion codex-glm opencode-codex opencode-glm ai-auth ai-harness-doctor ai-harness-rollback ai-harness-monitor ai-harness-stats; do
   printf '%-22s %s\n' "$c" "$(command -v "$c" || true)"
 done
 echo "Codex profiles:"

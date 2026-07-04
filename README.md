@@ -36,10 +36,11 @@ tokens redacted), and `ai-harness-stats --errors` output.
 
 Source `/Users/nonaka/.config/ai-harness/shell.sh` or open a new shell, then use:
 
-- `claude`: native Claude Code via a TRANSPARENT wrapper (telemetry only, no flags or env changes; real binary = `paths.env` `REAL_CLAUDE`).
+- `claude` / `codex`: NOT wrapped — your daily-driver commands stay exactly as they are.
+- `claude-fusion`: native Claude Code via a TRANSPARENT wrapper (telemetry only, no flags or env changes; real binary = `paths.env` `REAL_CLAUDE`).
 - `claude-codex`: Claude Code through CLIProxyAPI and OpenAI/Codex OAuth, GPT-5.5, high effort. Uses dedicated config dir `~/.config/ai-harness/claude-codex`.
 - `claude-glm`: Claude Code through Z.AI Anthropic-compatible GLM-5.2, high effort. Uses dedicated config dir `~/.config/ai-harness/claude-glm`.
-- `codex`: Codex CLI through native Codex/OpenAI OAuth, GPT-5.5, high effort.
+- `codex-fusion`: Codex CLI through native Codex/OpenAI OAuth, GPT-5.5, high effort, telemetry.
 - `codex-glm`: Codex CLI through CLIProxyAPI to Z.AI GLM-5.2. Gated by `ai-harness-enable codex-glm` (accepted 2026-07-03).
 - `opencode-codex`: OpenCode through native OpenCode OpenAI OAuth, GPT-5.5, high effort.
 - `opencode-glm`: OpenCode through Z.AI Coding Plan GLM-5.2, high effort.

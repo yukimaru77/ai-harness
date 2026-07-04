@@ -11,10 +11,13 @@
 # ~/.codex are untouched.
 #
 # Usage:
-#   ai-harness-agent list                 show store vs selection
+#   ai-harness-agent list                 show skills + MCP: store/candidates vs selection
+#   ai-harness-agent select               interactive: ask about every skill and MCP candidate
 #   ai-harness-agent add <skill>...       symlink skill(s) from the store
 #   ai-harness-agent remove <skill>...    remove from selection
-#   ai-harness-agent mcp                  open the MCP selection file
+#   ai-harness-agent mcp-add <name>...    copy MCP server def from ~/.claude.json
+#   ai-harness-agent mcp-remove <name>... remove MCP server from selection
+#   ai-harness-agent mcp                  open the MCP selection file in an editor
 #   ai-harness-agent sync                 re-wire agent homes (idempotent)
 set -euo pipefail
 
@@ -22,7 +25,7 @@ STORE="$HOME/.agents/skills"
 AF="$HOME/.agent-fusion"
 SEL="$AF/skills"
 
-usage() { sed -n '2,17p' "$0"; exit 64; }
+usage() { sed -n '2,20p' "$0"; exit 64; }
 
 sync() {
   mkdir -p "$SEL" "$AF/claude" "$AF/codex" "$AF/xdg/opencode"
@@ -59,17 +62,103 @@ PY
   echo "sync ok"
 }
 
+# MCP candidates come from the user's normal Claude Code config (~/.claude.json
+# mcpServers). mcp-add copies a candidate's full definition into the selection.
+mcp_candidates() {
+  python3 -c "import json,os;d=json.load(open(os.path.expanduser('~/.claude.json')));print('\n'.join(d.get('mcpServers',{})))" 2>/dev/null || true
+}
+
+mcp_selected() {
+  python3 -c "import json;d=json.load(open('$AF/mcp.json'));print('\n'.join(d.get('mcpServers',{})))" 2>/dev/null || true
+}
+
+mcp_add() {
+  local name="$1"
+  python3 - "$name" "$AF/mcp.json" <<'PY'
+import json, os, sys
+name, sel_path = sys.argv[1], sys.argv[2]
+src = json.load(open(os.path.expanduser("~/.claude.json"))).get("mcpServers", {})
+if name not in src:
+    raise SystemExit(f"not a candidate in ~/.claude.json mcpServers: {name}")
+sel = json.load(open(sel_path))
+sel.setdefault("mcpServers", {})[name] = src[name]
+json.dump(sel, open(sel_path, "w"), indent=2)
+print(f"mcp selected: {name}")
+PY
+}
+
+mcp_remove() {
+  local name="$1"
+  python3 - "$name" "$AF/mcp.json" <<'PY'
+import json, sys
+name, sel_path = sys.argv[1], sys.argv[2]
+sel = json.load(open(sel_path))
+sel.get("mcpServers", {}).pop(name, None)
+json.dump(sel, open(sel_path, "w"), indent=2)
+print(f"mcp deselected: {name}")
+PY
+}
+
+do_list() {
+  echo "Skills — store: $STORE, selection: $SEL"
+  local s name mark
+  for s in "$STORE"/*/; do
+    name="$(basename "$s")"
+    if [ -e "$SEL/$name" ]; then mark="[selected]"; else mark="[ ]"; fi
+    printf '  %-10s %s\n' "$mark" "$name"
+  done
+  echo "MCP servers — candidates from ~/.claude.json, selection: $AF/mcp.json"
+  local cand
+  for cand in $(mcp_candidates); do
+    if mcp_selected | grep -qx "$cand"; then
+      printf '  %-10s %s\n' "[selected]" "$cand"
+    else
+      printf '  %-10s %s\n' "[ ]" "$cand"
+    fi
+  done
+  [ -n "$(mcp_candidates)" ] || echo "  (no candidates)"
+}
+
 case "${1:-}" in
   list)
-    echo "Store ($STORE):"
-    local_sel="$(ls "$SEL" 2>/dev/null || true)"
+    do_list
+    ;;
+  select)
+    # Interactive walk-through: ask about EVERY store skill and EVERY MCP
+    # candidate. Also the flow an AI agent should mirror in chat (see
+    # docs/AGENT_SETUP.md).
+    [ -t 0 ] || { echo "select needs a TTY; use list/add/remove/mcp-add non-interactively" >&2; exit 64; }
     for s in "$STORE"/*/; do
       name="$(basename "$s")"
-      if [ -e "$SEL/$name" ]; then mark="[selected]"; else mark="[ ]"; fi
-      printf '  %-10s %s\n' "$mark" "$name"
+      cur="n"; [ -e "$SEL/$name" ] && cur="y"
+      printf 'skill %-30s include? [y/n, current=%s]: ' "$name" "$cur"
+      IFS= read -r ans
+      [ -n "$ans" ] || ans="$cur"
+      case "$ans" in
+        y|Y) ln -sfn "$STORE/$name" "$SEL/$name" ;;
+        *) rm -f "$SEL/$name" ;;
+      esac
     done
-    echo "MCP selection ($AF/mcp.json):"
-    python3 -c "import json;d=json.load(open('$AF/mcp.json'));ks=list(d.get('mcpServers',{}));print('  ' + (', '.join(ks) if ks else '(none)'))"
+    for cand in $(mcp_candidates); do
+      cur="n"; mcp_selected | grep -qx "$cand" && cur="y"
+      printf 'mcp   %-30s include? [y/n, current=%s]: ' "$cand" "$cur"
+      IFS= read -r ans
+      [ -n "$ans" ] || ans="$cur"
+      case "$ans" in
+        y|Y) mcp_add "$cand" >/dev/null ;;
+        *) mcp_remove "$cand" >/dev/null ;;
+      esac
+    done
+    echo "--- result:"
+    do_list
+    ;;
+  mcp-add)
+    shift; [ "$#" -ge 1 ] || usage
+    for name in "$@"; do mcp_add "$name"; done
+    ;;
+  mcp-remove)
+    shift; [ "$#" -ge 1 ] || usage
+    for name in "$@"; do mcp_remove "$name"; done
     ;;
   add)
     shift; [ "$#" -ge 1 ] || usage

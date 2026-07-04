@@ -171,6 +171,26 @@ Create `~/.config/ai-harness/secrets/` (700):
   direct `--model`/settings model value. The shipped wrappers already encode
   this — do not "simplify" them.
 
+## Phase 5.5 — skill / MCP selection (ASK THE USER)
+
+The harness routes see NO skills and NO MCP servers by default. Do not decide
+for the user — enumerate and ask:
+
+1. Run `ai-harness-agent list`. It shows every skill in the `~/.agents/skills`
+   store and every MCP-server candidate from the user's `~/.claude.json`, each
+   marked `[selected]` or `[ ]`.
+2. Present the COMPLETE list to the user and ask, item by item (or as one
+   checklist), which skills and which MCP servers the harness routes should
+   get. Ask about every candidate — do not skip or preselect.
+3. Apply the answers with `ai-harness-agent add <skill>` /
+   `ai-harness-agent mcp-add <server>` (remove with `remove` / `mcp-remove`),
+   then `ai-harness-agent sync`.
+4. Show `ai-harness-agent list` output back to the user as confirmation.
+
+The user can also do this themselves later: `ai-harness-agent select` is an
+interactive y/n walk-through of every item. Whenever the user asks "what
+skills/MCP do the harness routes have?", answer from `ai-harness-agent list`.
+
 ## Phase 6 — verify (all selected routes)
 
 ```bash

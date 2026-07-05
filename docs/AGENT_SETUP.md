@@ -212,7 +212,9 @@ and restart the fusion LaunchAgent. No code changes.
 5. Mode switches: `/moe` slash command (`artifacts/config/claude/commands/moe.md`
    → `~/.claude/commands/` and `~/.agent-fusion/claude/commands/`), Codex
    custom prompt (`artifacts/config/codex-prompts/moe.md` →
-   `~/.agent-fusion/codex/prompts/`), or `ai-harness-fusion on|off <instance>`.
+   `~/.codex/prompts/` and `~/.agent-fusion/codex/prompts/`; placing a prompt
+   file is additive and does NOT wrap the plain codex binary), or
+   `ai-harness-fusion on|off <instance>`.
 6. Verify with `ai-harness-fusion diag all` — every line must be PASS.
 
 ## Phase 6 — verify (all selected routes)

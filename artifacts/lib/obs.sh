@@ -44,7 +44,9 @@ _obs_ts() {
 
 _obs_json_escape() {
   # stdin -> JSON-safe string content (no surrounding quotes).
-  # Escapes backslash and quote, converts newlines/tabs, drops other controls.
+  # Escapes backslash and quote, converts newlines/tabs, drops other controls,
+  # and drops invalid UTF-8 bytes — one bad byte would make grep/awk treat the
+  # whole JSONL file as binary, silently blinding every downstream analyzer.
   local s
   s="$(cat)"
   s="${s//\\/\\\\}"
@@ -52,7 +54,7 @@ _obs_json_escape() {
   s="${s//$'\n'/\\n}"
   s="${s//$'\t'/\\t}"
   s="${s//$'\r'/}"
-  printf '%s' "$s" | LC_ALL=C tr -d '\000-\010\013\014\016-\037'
+  printf '%s' "$s" | LC_ALL=C tr -d '\000-\010\013\014\016-\037' | iconv -c -f UTF-8 -t UTF-8 2>/dev/null
 }
 
 _obs_redact() {

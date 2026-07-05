@@ -31,7 +31,19 @@ CLIProxyAPI itself
   │  access log + error dumps (request headers include x-ai-harness-trace)
   ▼
 ~/.local/share/ai-harness/cliproxy/logs/main.log, error-*.log
+
+fusion-api (one instance per ~/.config/ai-harness/fusion/*.json;
+            claude-moe :8400 anthropic, codex-moe :8401 responses)
+  │  fusion_item per API call: request fingerprint, per-candidate results,
+  │  synthesis phase, degradations; live counters at /health
+  ▼
+~/.local/share/ai-harness/obs/fusion-<instance>.jsonl
 ```
+
+Identical instrumentation on every instance — claude-moe and codex-moe emit
+the same schema, the monitor probes each instance's /health, stats aggregates
+all fusion-*.jsonl files, bench covers both entry commands, and
+`ai-harness-fusion diag all` self-checks every instance layer by layer.
 
 `ai-harness-stats` joins all four sources into one report.
 
@@ -46,6 +58,9 @@ CLIProxyAPI itself
 | `cliproxy/logs/error-*.log` | CLIProxyAPI | `error-logs-max-files: 10` |
 
 Disable all wrapper/monitor telemetry for one run with `AI_HARNESS_OBS=0`.
+All JSONL is guaranteed valid UTF-8 (obs.sh drops invalid bytes on write —
+one bad byte would make grep/awk treat a whole file as binary and silently
+hide matches; if analyzing logs written before 2026-07-05, use `grep -a`).
 
 ## Event schema — `events.jsonl` (schema: 1)
 

@@ -49,7 +49,7 @@ run_route() {
   case "$route" in
     claude-fusion|claude-codex|claude-glm|claude-moe)
       cmd=("$BIN_DIR/$route" --print "$prompt") ;;
-    codex-fusion|codex-glm)
+    codex-fusion|codex-glm|codex-moe)
       cmd=("$BIN_DIR/$route" exec --skip-git-repo-check "$prompt") ;;
     opencode-codex|opencode-glm)
       cmd=("$BIN_DIR/$route" run "$prompt") ;;

@@ -14,12 +14,12 @@ Run with the shell tool (argument: on / off / toggle / status; default toggle):
     ai-harness-fusion <arg> codex-moe    # in Codex
     ai-harness-fusion <arg> claude-moe   # in Claude Code
 
-Then check whether THIS session goes through the fusion proxy:
-- Codex: `echo "${CODEX_HOME:-none}"` — contains ".agent-fusion/codex" = proxied.
-- Claude: `echo "${ANTHROPIC_BASE_URL:-direct}"` — contains "8400" = proxied.
+All Claude and Codex sessions run through the fusion proxies by default
+(claude: ANTHROPIC_BASE_URL in ~/.claude/settings.json; codex: the `fusion`
+model provider in ~/.codex/config.toml), so the new mode applies from the
+next step. Passthrough mode is byte-transparent to the real provider.
+Only sessions started BEFORE that wiring existed need a restart — for Claude
+you can verify with `echo "${ANTHROPIC_BASE_URL:-direct}"` (8400 = proxied).
 
-Report in 1-2 lines: the new mode, and whether it applies to this session
-(proxied = from the next step) or only to future `codex-moe` / `claude-moe`
-sessions (a running session's backend URL cannot be changed mid-flight — in
-that case tell the user to start `codex-moe` / `claude-moe`).
+Report in 1-2 lines: the new mode and that it applies from the next step.
 Diagnosis if anything misbehaves: `ai-harness-fusion diag all`.

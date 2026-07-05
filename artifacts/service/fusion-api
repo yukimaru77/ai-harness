@@ -72,8 +72,11 @@ DEFAULT_INSTANCE = {
     # own auth and headers — no model swap, no coercion, no cliproxy. Makes a
     # proxied daily-driver session behaviorally identical to a direct one;
     # only moe mode routes through the fan-out machinery.
+    # direct_upstream is the FULL upstream URL (protocol-specific), e.g.
+    # anthropic: https://api.anthropic.com/v1/messages
+    # responses: https://chatgpt.com/backend-api/codex/responses
     "transparent_passthrough": False,
-    "direct_upstream": "https://api.anthropic.com",
+    "direct_upstream": "https://api.anthropic.com/v1/messages",
 }
 
 SYNTH_INSTRUCTION = (
@@ -522,7 +525,7 @@ class FusionHandler(BaseHTTPRequestHandler):
         if mode != "moe" or is_background or not cfg["_instances"]:
             kind = "background" if is_background else "passthrough"
             bump(cfg, "items_background" if is_background else "items_passthrough")
-            if cfg.get("transparent_passthrough") and proto is AnthropicProto and not is_background:
+            if cfg.get("transparent_passthrough") and not is_background:
                 return self.proxy_direct(body, stream, trace, req_id, meta, kind)
             target = cfg.get("background_model") if is_background else cfg.get("passthrough_model")
             return self.proxy_single(body, target, stream, trace, req_id, meta, kind)
@@ -664,7 +667,7 @@ class FusionHandler(BaseHTTPRequestHandler):
             if k.lower() not in self.HOP_HEADERS:
                 headers[k] = v
         data = json.dumps(body, ensure_ascii=False).encode()
-        req = urllib.request.Request(cfg["direct_upstream"] + "/v1/messages",
+        req = urllib.request.Request(cfg["direct_upstream"],
                                      data=data, headers=headers)
         try:
             resp = urllib.request.urlopen(req, timeout=cfg["synthesis_timeout_s"])

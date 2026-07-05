@@ -189,7 +189,7 @@ check() {
   local c
   for c in ai-auth ai-harness-doctor ai-harness-enable ai-harness-rollback \
            ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent \
-           ai-harness-fusion claude-moe codex-moe; do
+           ai-harness-fusion; do
     require_file "$BIN_DIR/$c"
   done
   [ -n "$MONITOR_PLIST" ] || { echo "missing monitor LaunchAgent plist" >&2; exit 66; }
@@ -201,7 +201,7 @@ check() {
   for cmd in claude-fusion codex-fusion claude-codex claude-glm codex-glm opencode-codex opencode-glm \
              ai-auth ai-harness-doctor ai-harness-enable ai-harness-rollback \
              ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent \
-             ai-harness-fusion claude-moe codex-moe; do
+             ai-harness-fusion; do
     [ -e "$BIN_DIR/$cmd" ] || continue
     link="$LOCAL_BIN/$cmd"
     target="$BIN_DIR/$cmd"

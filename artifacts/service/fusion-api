@@ -67,6 +67,13 @@ DEFAULT_INSTANCE = {
     # login (which preserves claude.ai connectors); the proxy swaps in its
     # own upstream key regardless of what the client sent.
     "accept_any_local_auth": False,
+    # Transparent passthrough (anthropic protocol only): when NOT in moe mode,
+    # forward the request byte-faithfully to direct_upstream with the CLIENT's
+    # own auth and headers — no model swap, no coercion, no cliproxy. Makes a
+    # proxied daily-driver session behaviorally identical to a direct one;
+    # only moe mode routes through the fan-out machinery.
+    "transparent_passthrough": False,
+    "direct_upstream": "https://api.anthropic.com",
 }
 
 SYNTH_INSTRUCTION = (
@@ -515,6 +522,8 @@ class FusionHandler(BaseHTTPRequestHandler):
         if mode != "moe" or is_background or not cfg["_instances"]:
             kind = "background" if is_background else "passthrough"
             bump(cfg, "items_background" if is_background else "items_passthrough")
+            if cfg.get("transparent_passthrough") and proto is AnthropicProto and not is_background:
+                return self.proxy_direct(body, stream, trace, req_id, meta, kind)
             target = cfg.get("background_model") if is_background else cfg.get("passthrough_model")
             return self.proxy_single(body, target, stream, trace, req_id, meta, kind)
 
@@ -634,6 +643,72 @@ class FusionHandler(BaseHTTPRequestHandler):
                                 "error": f"{type(exc2).__name__}: {exc2}"[:300]})
                 if not stream:
                     self._error(502, "fusion synthesis and fallback both failed", req_id)
+
+    # accept-encoding is stripped too: urllib does not decompress, so a
+    # compressed upstream body would be relayed as opaque bytes the client
+    # cannot parse. Forcing identity keeps the relay byte-transparent.
+    HOP_HEADERS = {"host", "content-length", "connection", "keep-alive",
+                   "transfer-encoding", "upgrade", "proxy-authorization", "te",
+                   "accept-encoding"}
+
+    def proxy_direct(self, body, stream, trace, req_id, meta, kind):
+        """Byte-faithful forward to the real Anthropic API with the client's
+        own headers/auth. Used for non-moe traffic of transparent instances."""
+        cfg = self.cfg
+        t0 = time.time()
+        record = {"event": "fusion_item", "req_id": req_id, "trace_id": trace,
+                  "mode": kind, "direct": True, "stream": stream,
+                  "model": body.get("model"), "request": meta}
+        headers = {}
+        for k, v in self.headers.items():
+            if k.lower() not in self.HOP_HEADERS:
+                headers[k] = v
+        data = json.dumps(body, ensure_ascii=False).encode()
+        req = urllib.request.Request(cfg["direct_upstream"] + "/v1/messages",
+                                     data=data, headers=headers)
+        try:
+            resp = urllib.request.urlopen(req, timeout=cfg["synthesis_timeout_s"])
+        except urllib.error.HTTPError as exc:
+            payload = exc.read()
+            self.send_response(exc.code)
+            self.send_header("content-type", exc.headers.get("content-type", "application/json"))
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            record.update({"http_status": exc.code,
+                           "error_body": payload[:400].decode("utf-8", "replace"),
+                           "total_ms": int((time.time() - t0) * 1000)})
+            log_event(cfg, record)
+            return
+        except Exception as exc:
+            record.update({"error": f"{type(exc).__name__}: {exc}"[:300],
+                           "total_ms": int((time.time() - t0) * 1000)})
+            log_event(cfg, record)
+            return self._error(502, f"direct upstream unreachable: {type(exc).__name__}", req_id)
+        with resp:
+            if stream:
+                self._start_sse()
+                # no model rewrite: the client asked for this model by name
+                for line in resp:
+                    try:
+                        self.wfile.write(line)
+                        if line == b"\n":
+                            self.wfile.flush()
+                    except OSError:
+                        break
+                try:
+                    self.wfile.flush()
+                except OSError:
+                    pass
+            else:
+                payload = resp.read()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+        record["total_ms"] = int((time.time() - t0) * 1000)
+        log_event(cfg, record)
 
     def proxy_single(self, body, model, stream, trace, req_id, meta, kind):
         cfg, proto = self.cfg, self.proto

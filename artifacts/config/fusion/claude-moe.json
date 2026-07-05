@@ -11,5 +11,6 @@
   "synthesizer": "claude-opus-4-7",
   "passthrough_model": "claude-opus-4-7",
   "background_model": "claude-sonnet-5",
-  "accept_any_local_auth": true
+  "accept_any_local_auth": true,
+  "transparent_passthrough": true
 }

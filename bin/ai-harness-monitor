@@ -85,8 +85,13 @@ probe_reach anthropic_api "https://api.anthropic.com/v1/models"
 probe_reach openai_api "https://api.openai.com/v1/models"
 probe_reach chatgpt_backend "https://chatgpt.com/backend-api/models"
 
-# --- fusion-api (item-level fusion proxy) ---
-probe_http fusion_api "http://127.0.0.1:8400/health"
+# --- fusion-api instances (one per ~/.config/ai-harness/fusion/*.json) ---
+for fcfg in "$HOME/.config/ai-harness/fusion"/*.json; do
+  [ -e "$fcfg" ] || continue
+  fname="$(basename "$fcfg" .json)"
+  fport="$(python3 -c "import json;print(json.load(open('$fcfg')).get('listen_port',8400))" 2>/dev/null || echo 8400)"
+  probe_http "fusion_$fname" "http://127.0.0.1:$fport/health"
+done
 
 # --- Codex OAuth credential freshness inside CLIProxyAPI ---
 AUTH_FILE="$(ls "$HOME/.local/share/ai-harness/cliproxy/auth"/codex-*.json 2>/dev/null | head -n1 || true)"

@@ -1,7 +1,6 @@
 {
-  "listen_host": "127.0.0.1",
   "listen_port": 8400,
-  "upstream": "http://127.0.0.1:8317",
+  "protocol": "anthropic",
   "advertised_model": "fusion-v1",
   "background_model_alias": "fusion-bg",
   "candidates": [
@@ -11,8 +10,5 @@
   ],
   "synthesizer": "claude-opus-4-8",
   "passthrough_model": "claude-opus-4-8",
-  "background_model": "claude-sonnet-5",
-  "candidate_timeout_s": 240,
-  "synthesis_timeout_s": 600,
-  "keepalive_s": 10
+  "background_model": "claude-sonnet-5"
 }

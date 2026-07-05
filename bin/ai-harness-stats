@@ -28,7 +28,7 @@ EVENTS = os.path.join(OBS, "events.jsonl")
 HEALTH = os.path.join(OBS, "health.jsonl")
 LIFECYCLE = os.path.join(OBS, "proxy-lifecycle.jsonl")
 BENCH = os.path.join(OBS, "bench.jsonl")
-FUSION = os.path.join(OBS, "fusion.jsonl")
+FUSION_GLOB = os.path.join(OBS, "fusion*.jsonl")
 MAIN_LOG = os.path.join(HOME, ".local", "share", "ai-harness", "cliproxy", "logs", "main.log")
 
 GIN_RE = re.compile(
@@ -136,10 +136,12 @@ def collect(since):
         if ts is not None and ts >= since:
             data["bench"].append(ev)
 
-    for ev in read_jsonl(FUSION):
-        ts = parse_ts(ev.get("ts"))
-        if ts is not None and ts >= since:
-            data["fusion"].append(ev)
+    import glob as _glob
+    for fp in sorted(_glob.glob(FUSION_GLOB)):
+        for ev in read_jsonl(fp, rotated=False):
+            ts = parse_ts(ev.get("ts"))
+            if ts is not None and ts >= since:
+                data["fusion"].append(ev)
 
     try:
         with open(MAIN_LOG, "r", encoding="utf-8", errors="replace") as f:

@@ -37,7 +37,7 @@ unset ANTHROPIC_API_KEY OPENAI_API_KEY OPENAI_BASE_URL
 obs_event route_resolved \
   base_url="$FUSION_URL" \
   model=fusion-v1 \
-  fusion_mode="$(cat "$HOME/.agent-fusion/fusion-mode" 2>/dev/null || echo passthrough)" \
+  fusion_mode="$(cat "$HOME/.agent-fusion/fusion-mode-claude-moe" 2>/dev/null || echo passthrough)" \
   real_bin="$REAL_CLAUDE"
 
 obs_run "$REAL_CLAUDE" \

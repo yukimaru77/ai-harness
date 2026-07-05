@@ -4,7 +4,7 @@ allowed-tools: Bash(ai-harness-fusion:*), Bash(echo:*)
 ---
 
 Run these two commands with the Bash tool:
-1. `ai-harness-fusion ${ARGUMENTS:-toggle}` (valid: on / off / toggle / status; default toggle)
+1. `ai-harness-fusion ${ARGUMENTS:-toggle} claude-moe` (valid: on / off / toggle / status; default toggle)
 2. `echo "${ANTHROPIC_BASE_URL:-direct}"`
 
 Then report to the user in 1-2 short lines:

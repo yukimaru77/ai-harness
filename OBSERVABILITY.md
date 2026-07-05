@@ -106,7 +106,11 @@ periodically (e.g. after config changes: `ai-harness-bench --note "reason"`).
 
 ## Fusion schema — `fusion.jsonl` (schema: 2)
 
-Written by fusion-api (:8400). One `fusion_item` line per /v1/messages call:
+Written by fusion-api — multi-instance: one proxy per config in
+`~/.config/ai-harness/fusion/*.json`, one log per instance
+(`obs/fusion-<name>.jsonl`), every event carries `instance_name`. Protocols:
+`anthropic` (/v1/messages, claude-moe) and `responses` (/v1/responses,
+codex-moe). One `fusion_item` line per call:
 
 - identity: `req_id` (per request), `trace_id` (joins wrapper events and
   CLIProxyAPI error dumps), `boot_id` (which daemon run), `ts`/`ts_ms`
@@ -131,7 +135,7 @@ Rotation at 50 MB → `.1`.
 
 ### Fusion runbook — run `ai-harness-fusion diag` FIRST
 
-`ai-harness-fusion diag` checks every layer in dependency order (config →
+`ai-harness-fusion diag [instance|all]` checks every layer in dependency order (config →
 mode file → launchd → daemon → upstream proxy → every configured model →
 end-to-end) and prints `PASS`/`FAIL` with the exact fix command per failure.
 Fix the FIRST failure; later ones are usually consequences. For item-level

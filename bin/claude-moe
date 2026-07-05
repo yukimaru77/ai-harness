@@ -27,7 +27,10 @@ fi
 
 export CLAUDE_CONFIG_DIR="$HOME/.agent-fusion/claude"
 export ANTHROPIC_BASE_URL="$FUSION_URL"
-export ANTHROPIC_AUTH_TOKEN="$CLIENT_KEY"
+# Deliberately NO ANTHROPIC_AUTH_TOKEN: Claude Code keeps its native
+# claude.ai OAuth login (preserving claude.ai connectors); fusion-api
+# accepts the local request regardless (accept_any_local_auth) and swaps
+# in its own upstream key.
 export ANTHROPIC_MODEL="fusion-v1"
 export ANTHROPIC_SMALL_FAST_MODEL="fusion-bg"
 export ANTHROPIC_DEFAULT_HAIKU_MODEL="fusion-bg"

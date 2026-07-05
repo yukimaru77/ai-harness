@@ -61,6 +61,12 @@ DEFAULT_INSTANCE = {
     # protocol only), such messages are converted to user messages wrapped in
     # <system-message> tags before forwarding upstream.
     "coerce_system_messages": True,
+    # Accept ANY client Authorization header (or none) instead of requiring
+    # the cliproxy client key. Safe only because the daemon binds 127.0.0.1.
+    # Used by claude-moe so Claude Code can keep its native claude.ai OAuth
+    # login (which preserves claude.ai connectors); the proxy swaps in its
+    # own upstream key regardless of what the client sent.
+    "accept_any_local_auth": False,
 }
 
 SYNTH_INSTRUCTION = (
@@ -433,6 +439,8 @@ class FusionHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def _authorized(self):
+        if self.cfg.get("accept_any_local_auth"):
+            return True
         auth = self.headers.get("authorization", "") or self.headers.get("x-api-key", "")
         token = auth.replace("Bearer ", "").strip()
         try:

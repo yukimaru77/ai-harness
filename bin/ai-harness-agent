@@ -54,6 +54,11 @@ PY
   ln -sfn "$HOME/.codex/auth.json" "$AF/codex/auth.json"
   ln -sfn "$SEL" "$AF/codex/skills"
   ln -sfn "$SEL" "$AF/xdg/opencode/skills"
+  # /moe lives once per CLI (~/.claude/commands, ~/.codex/prompts); the
+  # isolated moe-session homes just symlink to those canonical files.
+  mkdir -p "$AF/claude/commands" "$AF/codex/prompts"
+  [ -e "$HOME/.claude/commands/moe.md" ] && ln -sfn "$HOME/.claude/commands/moe.md" "$AF/claude/commands/moe.md"
+  [ -e "$HOME/.codex/prompts/moe.md" ] && ln -sfn "$HOME/.codex/prompts/moe.md" "$AF/codex/prompts/moe.md"
   # Drop dangling selection links (skill removed from the store)
   local link
   for link in "$SEL"/*; do

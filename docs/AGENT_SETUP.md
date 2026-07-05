@@ -209,11 +209,12 @@ and restart the fusion LaunchAgent. No code changes.
 4. Claude candidate needs the Claude account registered in CLIProxyAPI:
    `ai-auth login anthropic`, and `disable-claude-cloak-mode: false` in the
    cliproxy config (otherwise Anthropic answers 429 to proxied traffic).
-5. Mode switches: `/moe` slash command (`artifacts/config/claude/commands/moe.md`
-   → `~/.claude/commands/` and `~/.agent-fusion/claude/commands/`), Codex
-   custom prompt (`artifacts/config/codex-prompts/moe.md` →
-   `~/.codex/prompts/` and `~/.agent-fusion/codex/prompts/`; placing a prompt
-   file is additive and does NOT wrap the plain codex binary), or
+5. Mode switches: `/moe` is installed ONCE per CLI — slash command
+   `artifacts/config/claude/commands/moe.md` → `~/.claude/commands/moe.md`,
+   Codex custom prompt `artifacts/config/codex-prompts/moe.md` →
+   `~/.codex/prompts/moe.md` (a prompt file is additive; it does NOT wrap the
+   plain binaries). `ai-harness-agent sync` symlinks both into the isolated
+   moe-session homes automatically. CLI alternative:
    `ai-harness-fusion on|off <instance>`.
 6. Verify with `ai-harness-fusion diag all` — every line must be PASS.
 

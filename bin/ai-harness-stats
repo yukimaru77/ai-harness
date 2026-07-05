@@ -28,6 +28,7 @@ EVENTS = os.path.join(OBS, "events.jsonl")
 HEALTH = os.path.join(OBS, "health.jsonl")
 LIFECYCLE = os.path.join(OBS, "proxy-lifecycle.jsonl")
 BENCH = os.path.join(OBS, "bench.jsonl")
+FUSION = os.path.join(OBS, "fusion.jsonl")
 MAIN_LOG = os.path.join(HOME, ".local", "share", "ai-harness", "cliproxy", "logs", "main.log")
 
 GIN_RE = re.compile(
@@ -88,7 +89,7 @@ def pct(values, p):
 
 
 def collect(since):
-    data = {"invocations": [], "health": [], "lifecycle": [], "proxy_requests": [], "bench": []}
+    data = {"invocations": [], "health": [], "lifecycle": [], "proxy_requests": [], "bench": [], "fusion": []}
 
     ended = {}
     for ev in read_jsonl(EVENTS):
@@ -134,6 +135,11 @@ def collect(since):
         ts = parse_ts(ev.get("ts"))
         if ts is not None and ts >= since:
             data["bench"].append(ev)
+
+    for ev in read_jsonl(FUSION):
+        ts = parse_ts(ev.get("ts"))
+        if ts is not None and ts >= since:
+            data["fusion"].append(ev)
 
     try:
         with open(MAIN_LOG, "r", encoding="utf-8", errors="replace") as f:
@@ -201,6 +207,28 @@ def summarize(data):
     restarts = [e for e in data["lifecycle"] if e.get("event") == "boot"]
     crashes = [e for e in data["lifecycle"] if e.get("event") == "proxy_exited" and e.get("rc") not in (0, None)]
 
+    fusion_items = [e for e in data["fusion"] if e.get("event") == "fusion_item"]
+    fusion_modes = defaultdict(int)
+    fusion_degraded = defaultdict(int)
+    cand_stats = defaultdict(lambda: {"ok": 0, "fail": 0, "latencies": []})
+    synth_lat, total_lat = [], []
+    for it in fusion_items:
+        fusion_modes[it.get("mode", "?")] += 1
+        if it.get("degraded"):
+            fusion_degraded[it["degraded"]] += 1
+        for c in it.get("candidates", []) or []:
+            s = cand_stats[c.get("instance") or c.get("model", "?")]
+            if c.get("ok"):
+                s["ok"] += 1
+            else:
+                s["fail"] += 1
+            if isinstance(c.get("latency_ms"), (int, float)):
+                s["latencies"].append(c["latency_ms"])
+        if isinstance(it.get("synthesis_ms"), (int, float)):
+            synth_lat.append(it["synthesis_ms"])
+        if isinstance(it.get("total_ms"), (int, float)):
+            total_lat.append(it["total_ms"])
+
     return {
         "routes": {k: {
             "invocations": v["count"],
@@ -220,6 +248,19 @@ def summarize(data):
             "p50_ms": pct(v["durations"], 50),
             "p95_ms": pct(v["durations"], 95),
         } for k, v in sorted(bench.items())},
+        "fusion": {
+            "items": len(fusion_items),
+            "by_mode": dict(fusion_modes),
+            "degraded": dict(fusion_degraded),
+            "candidates": {k: {
+                "ok": v["ok"], "fail": v["fail"],
+                "p50_ms": pct(v["latencies"], 50), "p95_ms": pct(v["latencies"], 95),
+            } for k, v in sorted(cand_stats.items())},
+            "synthesis_p50_ms": pct(synth_lat, 50),
+            "synthesis_p95_ms": pct(synth_lat, 95),
+            "item_total_p50_ms": pct(total_lat, 50),
+            "item_total_p95_ms": pct(total_lat, 95),
+        },
         "proxy": {
             "requests": len(data["proxy_requests"]),
             "status": dict(sorted(status_counts.items())),
@@ -255,6 +296,16 @@ def print_summary(summary, hours):
             print(f"  {route:<16} runs={s['runs']:<4} ok={s['ok']:<4} "
                   f"p50={s['p50_ms']:.0f}ms p95={s['p95_ms']:.0f}ms")
         print()
+    f = summary["fusion"]
+    if f["items"]:
+        print("Fusion (fusion-api items):")
+        print(f"  items={f['items']} by_mode={f['by_mode']} degraded={f['degraded'] or 'none'}")
+        for name, s in f["candidates"].items():
+            print(f"  {name:<22} ok={s['ok']:<4} fail={s['fail']:<3} "
+                  f"p50={s['p50_ms']:.0f}ms p95={s['p95_ms']:.0f}ms")
+        print(f"  synthesis p50={f['synthesis_p50_ms']:.0f}ms p95={f['synthesis_p95_ms']:.0f}ms; "
+              f"item total p50={f['item_total_p50_ms']:.0f}ms p95={f['item_total_p95_ms']:.0f}ms")
+        print()
     p = summary["proxy"]
     print("CLIProxyAPI (access log):")
     print(f"  requests={p['requests']} status={p['status']} p50={p['p50_ms']:.0f}ms p95={p['p95_ms']:.0f}ms")
@@ -279,6 +330,11 @@ def print_errors(data):
     for e in data["lifecycle"]:
         if e.get("event") in ("proxy_exited", "render_failed") and e.get("rc", 1) != 0:
             rows.append((e.get("ts", ""), f"[lifecycle] {e.get('event')} rc={e.get('rc', '-')}"))
+    for e in data["fusion"]:
+        if e.get("degraded") or e.get("event") == "client_error" or e.get("aborted"):
+            what = e.get("degraded") or e.get("aborted") or e.get("message", "client_error")
+            rows.append((e.get("ts", ""), f"[fusion] {what} req={e.get('req_id')} "
+                         f"trace={e.get('trace_id', '-')} synth_err={e.get('synthesis_error', '-')}"))
     rows.sort(reverse=True)
     if not rows:
         print("No failures in the selected window.")

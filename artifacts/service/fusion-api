@@ -2,20 +2,32 @@
 """fusion-api — item-level multi-model fusion proxy (Anthropic Messages API).
 
 Every /v1/messages call is either passed through to one model, or (in "moe"
-mode) fanned out to N candidate models in parallel; a synthesizer model then
-merges the candidate responses into the single response the client receives.
-The client keeps a normal single-model conversation; candidates are ephemeral.
+mode) fanned out to N candidate model instances in parallel; a synthesizer
+model then merges the candidate responses into the single response the client
+receives. The client keeps a normal single-model conversation; candidates are
+ephemeral.
 
 Design doc: ~/.local/share/ai-harness/docs/design/fusion-api-proxy.md
+Runbook:    ~/.local/share/ai-harness/OBSERVABILITY.md  (Fusion sections)
 Config:     ~/.config/ai-harness/fusion-api.json
 Mode file:  ~/.agent-fusion/fusion-mode  ("moe" | "passthrough")
-Telemetry:  ~/.local/share/ai-harness/obs/fusion.jsonl
+Telemetry:  ~/.local/share/ai-harness/obs/fusion.jsonl (one line per item;
+            schema documented in OBSERVABILITY.md — designed so a weak model
+            or a human with jq can diagnose failures without reading code)
+
+Config "candidates" accepts strings or {"model": ..., "count": N} objects:
+    "candidates": [
+      {"model": "claude-opus-4-8", "count": 1},
+      "oauth-gpt-5.5",
+      {"model": "zai/glm-5.2", "count": 2}
+    ]
+count > 1 runs the same model that many times in parallel (independent
+samples). Each instance is labeled model#i in telemetry.
 """
 import concurrent.futures
 import json
 import os
 import socketserver
-import sys
 import threading
 import time
 import urllib.error
@@ -42,8 +54,10 @@ DEFAULT_CONFIG = {
     "candidate_timeout_s": 240,
     "synthesis_timeout_s": 600,
     "keepalive_s": 10,
+    "strip_thinking_from_candidates": True,
     "mode_file": "~/.agent-fusion/fusion-mode",
     "log_file": "~/.local/share/ai-harness/obs/fusion.jsonl",
+    "log_max_bytes": 50 * 1024 * 1024,
 }
 
 SYNTH_INSTRUCTION = (
@@ -57,6 +71,9 @@ SYNTH_INSTRUCTION = (
     "synthesis step in your output."
 )
 
+START_TIME = time.time()
+BOOT_ID = uuid.uuid4().hex[:12]
+
 
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
@@ -67,19 +84,56 @@ def load_config():
         pass
     for k in ("upstream_key_file", "mode_file", "log_file"):
         cfg[k] = os.path.expanduser(cfg[k])
+    # Normalize candidates to instance list: [{model, instance}]
+    instances = []
+    per_model = {}
+    for entry in cfg["candidates"]:
+        if isinstance(entry, str):
+            model, count = entry, 1
+        else:
+            model, count = entry["model"], int(entry.get("count", 1))
+        for _ in range(count):
+            per_model[model] = per_model.get(model, 0) + 1
+            instances.append({"model": model,
+                              "instance": f"{model}#{per_model[model]}"})
+    cfg["_instances"] = instances
     return cfg
 
 
 CFG = load_config()
 LOG_LOCK = threading.Lock()
 
+# Rolling counters exposed at /health — a weak model's first stop.
+COUNTERS = {
+    "items_total": 0, "items_moe": 0, "items_passthrough": 0,
+    "items_background": 0, "items_degraded": 0, "client_errors": 0,
+    "candidate_ok": {}, "candidate_fail": {},
+}
+COUNTERS_LOCK = threading.Lock()
+
+
+def bump(key, sub=None):
+    with COUNTERS_LOCK:
+        if sub is None:
+            COUNTERS[key] = COUNTERS.get(key, 0) + 1
+        else:
+            d = COUNTERS.setdefault(key, {})
+            d[sub] = d.get(sub, 0) + 1
+
 
 def log_event(record):
-    record.setdefault("schema", 1)
+    record.setdefault("schema", 2)
     record.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+    record.setdefault("ts_ms", int(time.time() * 1000))
+    record.setdefault("boot_id", BOOT_ID)
     try:
         os.makedirs(os.path.dirname(CFG["log_file"]), exist_ok=True)
         with LOG_LOCK:
+            try:
+                if os.path.getsize(CFG["log_file"]) > CFG["log_max_bytes"]:
+                    os.replace(CFG["log_file"], CFG["log_file"] + ".1")
+            except OSError:
+                pass
             with open(CFG["log_file"], "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
@@ -106,9 +160,26 @@ def set_mode(mode):
         f.write(mode + "\n")
 
 
+def request_meta(body):
+    """Size/shape fingerprint of an incoming request, for telemetry."""
+    msgs = body.get("messages", [])
+    last_role = msgs[-1].get("role") if msgs else None
+    has_tool_result = False
+    if msgs and isinstance(msgs[-1].get("content"), list):
+        has_tool_result = any(isinstance(b, dict) and b.get("type") == "tool_result"
+                              for b in msgs[-1]["content"])
+    return {
+        "req_model": body.get("model"),
+        "n_messages": len(msgs),
+        "n_tools": len(body.get("tools", []) or []),
+        "max_tokens": body.get("max_tokens"),
+        "input_chars": len(json.dumps(msgs, ensure_ascii=False)) if msgs else 0,
+        "last_role": last_role,
+        "last_has_tool_result": has_tool_result,
+    }
+
+
 def upstream_request(body, model, stream, timeout, extra_headers=None):
-    """POST to the upstream /v1/messages with the model swapped in.
-    Returns the raw HTTPResponse (caller reads/streams it)."""
     payload = dict(body)
     payload["model"] = model
     payload["stream"] = stream
@@ -131,31 +202,60 @@ def strip_thinking(content):
     return [b for b in content if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))]
 
 
-def run_candidate(body, model, trace):
+def summarize_content(content):
+    """Block-type histogram + sizes; safe to log (no full text)."""
+    if not isinstance(content, list):
+        return {"blocks": 0}
+    types = {}
+    text_chars = 0
+    tool_names = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        t = b.get("type", "?")
+        types[t] = types.get(t, 0) + 1
+        if t == "text":
+            text_chars += len(b.get("text", ""))
+        elif t == "tool_use":
+            tool_names.append(b.get("name"))
+    return {"blocks": len(content), "types": types,
+            "text_chars": text_chars, "tools_called": tool_names}
+
+
+def run_candidate(body, inst, trace, req_id):
+    model, label = inst["model"], inst["instance"]
     t0 = time.time()
     try:
         with upstream_request(body, model, stream=False,
                               timeout=CFG["candidate_timeout_s"],
                               extra_headers={"x-ai-harness-trace": trace}) as resp:
             data = json.loads(resp.read())
+        content = data.get("content", [])
+        if CFG["strip_thinking_from_candidates"]:
+            content = strip_thinking(content)
+        bump("candidate_ok", label)
         return {
-            "model": model,
-            "ok": True,
+            "instance": label, "model": model, "ok": True,
             "latency_ms": int((time.time() - t0) * 1000),
             "stop_reason": data.get("stop_reason"),
-            "content": strip_thinking(data.get("content", [])),
+            "usage": data.get("usage"),
+            "summary": summarize_content(content),
+            "content": content,
         }
-    except Exception as exc:  # noqa: BLE001 - candidate failure is data
+    except Exception as exc:  # noqa: BLE001 — candidate failure is data
+        status = None
         detail = ""
         if isinstance(exc, urllib.error.HTTPError):
+            status = exc.code
             try:
-                detail = exc.read()[:300].decode("utf-8", "replace")
+                detail = exc.read()[:400].decode("utf-8", "replace")
             except Exception:
                 pass
+        bump("candidate_fail", label)
         return {
-            "model": model,
-            "ok": False,
+            "instance": label, "model": model, "ok": False,
             "latency_ms": int((time.time() - t0) * 1000),
+            "http_status": status,
             "error": f"{type(exc).__name__}: {exc}"[:300],
             "error_body": detail,
         }
@@ -163,7 +263,7 @@ def run_candidate(body, model, trace):
 
 def build_synthesis_body(body, survivors):
     cand_json = json.dumps(
-        [{"model": c["model"], "stop_reason": c.get("stop_reason"),
+        [{"model": c["instance"], "stop_reason": c.get("stop_reason"),
           "content": c["content"]} for c in survivors],
         ensure_ascii=False)
     instruction = SYNTH_INSTRUCTION.format(n=len(survivors), candidates=cand_json)
@@ -182,9 +282,9 @@ def build_synthesis_body(body, survivors):
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "fusion-api/1"
+    server_version = "fusion-api/2"
 
-    def log_message(self, fmt, *args):  # quiet default access log
+    def log_message(self, fmt, *args):
         pass
 
     # ---- helpers ---------------------------------------------------------
@@ -196,7 +296,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _error(self, code, message):
+    def _error(self, code, message, req_id=None):
+        bump("client_errors")
+        log_event({"event": "client_error", "req_id": req_id,
+                   "http_status": code, "message": message,
+                   "path": self.path})
         self._json(code, {"type": "error",
                           "error": {"type": "api_error", "message": message}})
 
@@ -219,9 +323,22 @@ class Handler(BaseHTTPRequestHandler):
     # ---- routes ----------------------------------------------------------
     def do_GET(self):
         if self.path == "/health":
-            self._json(200, {"status": "ok", "mode": current_mode(),
-                             "candidates": CFG["candidates"],
-                             "synthesizer": CFG["synthesizer"]})
+            with COUNTERS_LOCK:
+                counters = json.loads(json.dumps(COUNTERS))
+            self._json(200, {
+                "status": "ok",
+                "boot_id": BOOT_ID,
+                "uptime_s": int(time.time() - START_TIME),
+                "mode": current_mode(),
+                "candidates": [i["instance"] for i in CFG["_instances"]],
+                "synthesizer": CFG["synthesizer"],
+                "passthrough_model": CFG["passthrough_model"],
+                "background_model": CFG["background_model"],
+                "upstream": CFG["upstream"],
+                "config_path": CONFIG_PATH,
+                "log_file": CFG["log_file"],
+                "counters": counters,
+            })
         elif self.path == "/control":
             self._json(200, {"mode": current_mode()})
         elif self.path.startswith("/v1/models"):
@@ -245,37 +362,43 @@ class Handler(BaseHTTPRequestHandler):
             set_mode(mode)
             log_event({"event": "mode_change", "mode": mode})
             return self._json(200, {"mode": mode})
-        if self.path.rstrip("/").endswith("/v1/messages") or self.path.startswith("/v1/messages"):
+        if "/v1/messages" in self.path:
+            req_id = uuid.uuid4().hex[:12]
             if not self._authorized():
-                return self._error(401, "invalid fusion-api key")
+                return self._error(401, "invalid fusion-api key", req_id)
             try:
                 body = json.loads(raw)
-            except json.JSONDecodeError:
-                return self._error(400, "invalid JSON body")
-            return self.handle_messages(body)
+            except json.JSONDecodeError as exc:
+                return self._error(400, f"invalid JSON body: {exc}", req_id)
+            return self.handle_messages(body, req_id)
         return self._error(404, "not found")
 
     # ---- core ------------------------------------------------------------
-    def handle_messages(self, body):
+    def handle_messages(self, body, req_id):
         trace = self.headers.get("x-ai-harness-trace") or str(uuid.uuid4())
         stream = bool(body.get("stream"))
-        req_model = body.get("model", "")
         mode = current_mode()
-        is_background = req_model == CFG["background_model_alias"]
+        meta = request_meta(body)
+        is_background = meta["req_model"] == CFG["background_model_alias"]
+        bump("items_total")
 
         if mode != "moe" or is_background:
+            kind = "background" if is_background else "passthrough"
+            bump("items_background" if is_background else "items_passthrough")
             target = CFG["background_model"] if is_background else CFG["passthrough_model"]
-            return self.proxy_single(body, target, stream, trace,
-                                     kind="background" if is_background else "passthrough")
+            return self.proxy_single(body, target, stream, trace, req_id, meta, kind)
 
+        bump("items_moe")
         t_start = time.time()
         if stream:
             self._start_sse()
 
-        # Phase A: fan-out (keepalive comments while waiting)
+        # Phase A: fan-out with keepalive comments
         candidates = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(CFG["candidates"])) as pool:
-            futures = [pool.submit(run_candidate, body, m, trace) for m in CFG["candidates"]]
+        instances = CFG["_instances"]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(instances)) as pool:
+            futures = [pool.submit(run_candidate, body, inst, trace, req_id)
+                       for inst in instances]
             pending = set(futures)
             while pending:
                 done, pending = concurrent.futures.wait(
@@ -287,28 +410,40 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(b": fusion fan-out in progress\n\n")
                         self.wfile.flush()
                     except OSError:
+                        log_event({"event": "fusion_item", "req_id": req_id,
+                                   "trace_id": trace, "mode": "moe",
+                                   "request": meta, "aborted": "client_disconnected_during_fanout",
+                                   "fanout_ms": int((time.time() - t_start) * 1000)})
                         for f in pending:
                             f.cancel()
                         return
 
+        fanout_ms = int((time.time() - t_start) * 1000)
         survivors = [c for c in candidates if c.get("ok")]
         record = {
-            "event": "fusion_item", "trace_id": trace, "mode": "moe",
-            "candidates": [{k: c.get(k) for k in ("model", "ok", "latency_ms", "stop_reason", "error")}
+            "event": "fusion_item", "req_id": req_id, "trace_id": trace,
+            "mode": "moe", "stream": stream, "request": meta,
+            "fanout_ms": fanout_ms,
+            "candidates": [{k: c.get(k) for k in
+                            ("instance", "model", "ok", "latency_ms", "stop_reason",
+                             "http_status", "error", "summary", "usage")
+                            if c.get(k) is not None}
                            for c in candidates],
             "n_survivors": len(survivors),
         }
 
-        # Degraded: nothing survived -> plain passthrough to synthesizer model
         if not survivors:
-            record.update({"degraded": "all_candidates_failed"})
+            bump("items_degraded")
+            record["degraded"] = "all_candidates_failed"
             log_event(record)
             if stream:
                 return self.stream_upstream_after_headers(body, CFG["synthesizer"], trace)
-            return self.proxy_single(body, CFG["synthesizer"], stream, trace, kind="degraded")
+            return self.proxy_single(body, CFG["synthesizer"], stream, trace,
+                                     req_id, meta, "degraded")
 
         # Phase B/C: synthesis
         synth_body = build_synthesis_body(body, survivors)
+        record["synthesis_input_chars"] = len(json.dumps(synth_body.get("system", ""), ensure_ascii=False))
         t_syn = time.time()
         try:
             if stream:
@@ -319,18 +454,32 @@ class Handler(BaseHTTPRequestHandler):
                                       extra_headers={"x-ai-harness-trace": trace}) as resp:
                     data = json.loads(resp.read())
                 data["model"] = CFG["advertised_model"]
+                record["synthesis_summary"] = summarize_content(data.get("content", []))
                 self._json(200, data)
             record.update({"synthesizer": CFG["synthesizer"],
                            "synthesis_ms": int((time.time() - t_syn) * 1000),
                            "total_ms": int((time.time() - t_start) * 1000)})
             log_event(record)
-        except Exception as exc:  # synthesis failed -> best surviving candidate
+        except Exception as exc:
+            status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
+            body_snip = ""
+            if isinstance(exc, urllib.error.HTTPError):
+                try:
+                    body_snip = exc.read()[:400].decode("utf-8", "replace")
+                except Exception:
+                    pass
+            bump("items_degraded")
             record.update({"degraded": "synthesis_failed",
-                           "synthesis_error": f"{type(exc).__name__}: {exc}"[:300]})
+                           "synthesizer": CFG["synthesizer"],
+                           "synthesis_http_status": status,
+                           "synthesis_error": f"{type(exc).__name__}: {exc}"[:300],
+                           "synthesis_error_body": body_snip,
+                           "total_ms": int((time.time() - t_start) * 1000)})
             log_event(record)
+            # fall back to highest-priority surviving candidate
             best = None
-            for m in CFG["candidates"]:
-                best = next((c for c in survivors if c["model"] == m), None)
+            for inst in CFG["_instances"]:
+                best = next((c for c in survivors if c["instance"] == inst["instance"]), None)
                 if best:
                     break
             fallback = {
@@ -347,8 +496,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json(200, fallback)
 
-    def proxy_single(self, body, model, stream, trace, kind):
+    def proxy_single(self, body, model, stream, trace, req_id, meta, kind):
         t0 = time.time()
+        record = {"event": "fusion_item", "req_id": req_id, "trace_id": trace,
+                  "mode": kind, "stream": stream, "model": model, "request": meta}
         try:
             resp = upstream_request(body, model, stream=stream,
                                     timeout=CFG["synthesis_timeout_s"],
@@ -360,28 +511,39 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("content-length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
-            log_event({"event": "fusion_item", "trace_id": trace, "mode": kind,
-                       "model": model, "http_status": exc.code,
-                       "total_ms": int((time.time() - t0) * 1000)})
+            record.update({"http_status": exc.code,
+                           "error_body": payload[:400].decode("utf-8", "replace"),
+                           "total_ms": int((time.time() - t0) * 1000)})
+            log_event(record)
             return
         except Exception as exc:
-            return self._error(502, f"upstream unreachable: {type(exc).__name__}")
+            record.update({"error": f"{type(exc).__name__}: {exc}"[:300],
+                           "total_ms": int((time.time() - t0) * 1000)})
+            log_event(record)
+            return self._error(502, f"upstream unreachable: {type(exc).__name__}", req_id)
         with resp:
             if stream:
                 self._start_sse()
                 self.forward_sse(resp)
             else:
                 data = resp.read()
+                try:
+                    parsed = json.loads(data)
+                    parsed["model"] = CFG["advertised_model"]
+                    record["response_summary"] = summarize_content(parsed.get("content", []))
+                    record["usage"] = parsed.get("usage")
+                    data = json.dumps(parsed, ensure_ascii=False).encode()
+                except (ValueError, KeyError):
+                    pass
                 self.send_response(200)
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
-        log_event({"event": "fusion_item", "trace_id": trace, "mode": kind,
-                   "model": model, "total_ms": int((time.time() - t0) * 1000)})
+        record["total_ms"] = int((time.time() - t0) * 1000)
+        log_event(record)
 
     def stream_upstream_after_headers(self, body, model, trace):
-        """Stream an upstream SSE response; HTTP headers already sent."""
         try:
             resp = upstream_request(body, model, stream=True,
                                     timeout=CFG["synthesis_timeout_s"],
@@ -400,17 +562,16 @@ class Handler(BaseHTTPRequestHandler):
             self.forward_sse(resp)
 
     def forward_sse(self, resp):
-        adv = CFG["advertised_model"].encode()
+        adv = CFG["advertised_model"]
         for line in resp:
             if b'"model"' in line:
-                # rewrite the model announced in message_start
                 try:
                     txt = line.decode("utf-8")
                     if txt.startswith("data: "):
                         obj = json.loads(txt[6:])
                         msg = obj.get("message")
                         if isinstance(msg, dict) and "model" in msg:
-                            msg["model"] = adv.decode()
+                            msg["model"] = adv
                             line = b"data: " + json.dumps(obj, ensure_ascii=False).encode() + b"\n"
                 except (ValueError, UnicodeDecodeError):
                     pass
@@ -426,7 +587,6 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def emit_fake_stream(self, message):
-        """Emit a minimal valid SSE stream for an already-final message."""
         def ev(name, obj):
             try:
                 self.wfile.write(f"event: {name}\ndata: {json.dumps(obj, ensure_ascii=False)}\n\n".encode())
@@ -470,7 +630,12 @@ def main():
         set_mode("passthrough")
     addr = (CFG["listen_host"], CFG["listen_port"])
     log_event({"event": "boot", "listen": f"{addr[0]}:{addr[1]}",
-               "candidates": CFG["candidates"], "synthesizer": CFG["synthesizer"]})
+               "config_path": CONFIG_PATH,
+               "candidates": [i["instance"] for i in CFG["_instances"]],
+               "synthesizer": CFG["synthesizer"],
+               "passthrough_model": CFG["passthrough_model"],
+               "background_model": CFG["background_model"],
+               "mode": current_mode()})
     server = ThreadingHTTPServer(addr, Handler)
     try:
         server.serve_forever()

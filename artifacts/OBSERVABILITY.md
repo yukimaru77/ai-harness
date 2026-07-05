@@ -104,14 +104,50 @@ This is the apples-to-apples comparison: same prompt, same moment, all routes.
 `ai-harness-stats` shows per-route ok-rate and p50/p95. Run it manually or
 periodically (e.g. after config changes: `ai-harness-bench --note "reason"`).
 
-## Fusion schema — `fusion.jsonl` (schema: 1)
+## Fusion schema — `fusion.jsonl` (schema: 2)
 
-Written by fusion-api (:8400). `fusion_item` per request: `mode`
-(moe/passthrough/background/degraded), per-candidate `model/ok/latency_ms/
-stop_reason/error`, `n_survivors`, `synthesizer`, `synthesis_ms`, `total_ms`,
-`degraded` (`all_candidates_failed` | `synthesis_failed`), and the incoming
-`trace_id`. Plus `mode_change`, `boot`, `shutdown` events.
-`ai-harness-fusion logs` tails it; the monitor probes `/health`.
+Written by fusion-api (:8400). One `fusion_item` line per /v1/messages call:
+
+- identity: `req_id` (per request), `trace_id` (joins wrapper events and
+  CLIProxyAPI error dumps), `boot_id` (which daemon run), `ts`/`ts_ms`
+- `mode`: `moe` | `passthrough` | `background` | `degraded`
+- `request`: shape fingerprint — `req_model`, `n_messages`, `n_tools`,
+  `max_tokens`, `input_chars`, `last_role`, `last_has_tool_result`
+- moe items: `fanout_ms`, `candidates[]` each with `instance`
+  (`model#N` — config `count` runs the same model N times), `ok`,
+  `latency_ms`, `stop_reason`, `usage`, `summary` (block-type histogram,
+  `text_chars`, `tools_called`) or on failure `http_status`, `error`,
+  `error_body`; then `n_survivors`, `synthesizer`, `synthesis_input_chars`,
+  `synthesis_ms`, `synthesis_summary`, `total_ms`
+- failure markers: `degraded` (`all_candidates_failed` | `synthesis_failed`
+  with `synthesis_http_status`/`synthesis_error`/`synthesis_error_body`),
+  `aborted` (`client_disconnected_during_fanout`)
+- other events: `boot` (full effective config), `shutdown`, `mode_change`,
+  `client_error`
+
+`/health` exposes live counters (items by mode, degraded count, per-instance
+ok/fail) plus `uptime_s` and `boot_id` — check it before reading any log.
+Rotation at 50 MB → `.1`.
+
+### Fusion runbook — run `ai-harness-fusion diag` FIRST
+
+`ai-harness-fusion diag` checks every layer in dependency order (config →
+mode file → launchd → daemon → upstream proxy → every configured model →
+end-to-end) and prints `PASS`/`FAIL` with the exact fix command per failure.
+Fix the FIRST failure; later ones are usually consequences. For item-level
+failures after diag passes: `ai-harness-fusion errors` (newest degraded /
+client_error lines, each naming the failing phase and upstream error body),
+then `ai-harness-stats --errors` / `--trace <id>` for the session side.
+
+| Symptom | Meaning | Fix |
+|---|---|---|
+| diag FAIL on daemon | fusion-api not running | printed kickstart command; then read `obs/fusion.launchd.err.log` |
+| diag FAIL one model, `rate_limit_error`, claude-only | Anthropic rejects proxied OAuth without cloak | `disable-claude-cloak-mode: false` in cliproxy config, restart cliproxy |
+| diag FAIL one model, `authentication_error` | credential expired in CLIProxyAPI | `ai-auth login anthropic` / `login openai` / `rotate zai` |
+| items with `degraded: all_candidates_failed` | every candidate errored — see each `error_body` | usually upstream outage; check `health.jsonl` probes at that time |
+| items with `degraded: synthesis_failed` | candidates fine, synthesizer errored; client got best candidate | read `synthesis_error_body`; often rate limit on the synthesizer model |
+| `aborted: client_disconnected_during_fanout` | user cancelled mid-item | harmless; frequent occurrences = fan-out too slow, drop the slowest candidate |
+| moe items but 1 candidate always slow | see per-instance p95 in `ai-harness-stats` Fusion section | reduce that model's `count` to 0 (remove) in fusion-api.json, restart |
 
 ## Lifecycle schema — `proxy-lifecycle.jsonl` (schema: 1)
 

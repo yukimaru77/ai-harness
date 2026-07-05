@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# ai-harness-fusion — control the item-level fusion proxy (fusion-api :8400).
+# ai-harness-fusion — control and diagnose the item-level fusion proxy.
 #
-#   ai-harness-fusion status    current mode + daemon health
-#   ai-harness-fusion on        switch to "moe" (fan-out + synthesis per item)
-#   ai-harness-fusion off       switch to "passthrough" (single model)
-#   ai-harness-fusion toggle    flip the mode
-#   ai-harness-fusion logs      tail recent fusion telemetry
-set -euo pipefail
+#   ai-harness-fusion status         current mode + daemon health (counters)
+#   ai-harness-fusion on|off|toggle  switch moe / passthrough
+#   ai-harness-fusion logs [N]       tail fusion telemetry (default 20)
+#   ai-harness-fusion errors [N]     only degraded/error items, newest first
+#   ai-harness-fusion diag           full self-diagnosis: checks every layer,
+#                                    prints PASS/FAIL + the exact fix per FAIL.
+#                                    Run this FIRST when anything misbehaves.
+set -uo pipefail
 
 MODE_FILE="$HOME/.agent-fusion/fusion-mode"
 URL="http://127.0.0.1:8400"
 LOG="$HOME/.local/share/ai-harness/obs/fusion.jsonl"
+CFG="$HOME/.config/ai-harness/fusion-api.json"
+KEY_FILE="$HOME/.config/ai-harness/secrets/cliproxy-client.key"
+LABEL="com.$(id -un).ai-harness.fusion"
+launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || LABEL="com.nonaka.ai-harness.fusion"
 
 mode() { cat "$MODE_FILE" 2>/dev/null || echo passthrough; }
 
@@ -20,11 +26,124 @@ set_mode() {
   echo "fusion mode: $1"
 }
 
+pass() { printf 'PASS  %s\n' "$1"; }
+fail() { FAILED=1; printf 'FAIL  %s\n      fix: %s\n' "$1" "$2"; }
+
+diag() {
+  FAILED=0
+  echo "fusion-api self-diagnosis ($(date -u '+%Y-%m-%dT%H:%M:%SZ'))"
+  echo "docs: OBSERVABILITY.md 'Fusion' sections in ~/.local/share/ai-harness/"
+  echo
+
+  # 1. config valid JSON?
+  if python3 -c "import json;json.load(open('$CFG'))" 2>/dev/null; then
+    pass "config $CFG is valid JSON"
+  else
+    fail "config $CFG is missing or invalid JSON" \
+         "restore from ~/.local/share/ai-harness/artifacts/config/fusion-api.json"
+  fi
+
+  # 2. mode file
+  m="$(mode)"
+  case "$m" in
+    moe|passthrough) pass "mode file readable (mode=$m)" ;;
+    *) fail "mode file $MODE_FILE has unexpected value '$m'" \
+            "echo passthrough > $MODE_FILE" ;;
+  esac
+
+  # 3. launchd service
+  if launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -q 'state = running'; then
+    pass "LaunchAgent $LABEL running"
+  else
+    fail "LaunchAgent $LABEL not running" \
+         "launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/$LABEL.plist; then check ~/.local/share/ai-harness/obs/fusion.launchd.err.log"
+  fi
+
+  # 4. daemon health endpoint
+  health="$(curl -fsS -m 5 "$URL/health" 2>/dev/null || true)"
+  if [ -n "$health" ]; then
+    pass "daemon answering on $URL (uptime $(printf '%s' "$health" | python3 -c "import json,sys;print(json.load(sys.stdin).get('uptime_s'))" 2>/dev/null)s)"
+  else
+    fail "daemon not answering on $URL" \
+         "launchctl kickstart -k gui/\$(id -u)/$LABEL; tail ~/.local/share/ai-harness/obs/fusion.launchd.err.log"
+  fi
+
+  # 5. upstream CLIProxyAPI
+  key="$(cat "$KEY_FILE" 2>/dev/null || true)"
+  if [ -z "$key" ]; then
+    fail "client key $KEY_FILE unreadable" "check ~/.config/ai-harness/secrets permissions (700/600)"
+  elif curl -fsS -m 5 -H "Authorization: Bearer $key" http://127.0.0.1:8317/v1/models >/dev/null 2>&1; then
+    pass "upstream CLIProxyAPI :8317 reachable + authorized"
+  else
+    fail "upstream CLIProxyAPI :8317 unreachable" \
+         "launchctl kickstart -k gui/\$(id -u)/com.$(id -un).ai-harness.cliproxy (or com.nonaka...); then ai-auth status"
+  fi
+
+  # 6. every configured model answers a 1-token probe through the upstream
+  if [ -n "$key" ]; then
+    for m in $(python3 -c "
+import json
+d=json.load(open('$CFG'))
+models=set()
+for c in d.get('candidates',[]):
+    models.add(c if isinstance(c,str) else c['model'])
+models.add(d.get('synthesizer')); models.add(d.get('passthrough_model')); models.add(d.get('background_model'))
+print(' '.join(sorted(m for m in models if m)))" 2>/dev/null); do
+      out="$(curl -sS -m 90 -X POST http://127.0.0.1:8317/v1/messages \
+        -H "Authorization: Bearer $key" -H "content-type: application/json" \
+        -d "{\"model\":\"$m\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}]}" 2>/dev/null)"
+      if printf '%s' "$out" | grep -q '"type":"message"' 2>/dev/null || printf '%s' "$out" | grep -q '"type": "message"'; then
+        pass "model $m answers"
+      else
+        errtype="$(printf '%s' "$out" | python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('error',{}).get('type','no-response'))
+except Exception: print('no-response')" 2>/dev/null)"
+        case "$errtype" in
+          rate_limit_error) hint="429 from provider. If ONLY claude models fail: check disable-claude-cloak-mode is false in ~/.config/ai-harness/cliproxy/config.yaml, then restart cliproxy. Otherwise wait / check plan quota." ;;
+          authentication_error) hint="credential missing/expired in CLIProxyAPI: ai-auth status; re-login with ai-auth login anthropic / login openai; GLM: ai-auth rotate zai" ;;
+          *) hint="see the raw body: ai-harness-fusion errors; and cliproxy error dumps in ~/.local/share/ai-harness/cliproxy/logs/" ;;
+        esac
+        fail "model $m failed ($errtype)" "$hint"
+      fi
+    done
+  fi
+
+  # 7. end-to-end through the fusion daemon itself (passthrough path)
+  if [ -n "$key" ] && [ -n "$health" ]; then
+    out="$(curl -sS -m 120 -X POST "$URL/v1/messages" \
+      -H "Authorization: Bearer $key" -H "content-type: application/json" \
+      -d '{"model":"fusion-v1","max_tokens":8,"messages":[{"role":"user","content":"ok"}]}' 2>/dev/null)"
+    if printf '%s' "$out" | grep -qE '"type": ?"message"'; then
+      pass "end-to-end request through fusion-api"
+    else
+      fail "end-to-end request through fusion-api failed" \
+           "ai-harness-fusion errors  # the newest fusion_item/client_error line names the failing phase"
+    fi
+  fi
+
+  # 8. recent degraded items
+  if [ -f "$LOG" ]; then
+    recent_degraded="$(tail -n 200 "$LOG" | grep -c '"degraded"' || true)"
+    if [ "${recent_degraded:-0}" -gt 0 ]; then
+      echo "NOTE  $recent_degraded degraded item(s) in the last 200 log lines — inspect: ai-harness-fusion errors"
+    else
+      pass "no degraded items in the last 200 log lines"
+    fi
+  fi
+
+  echo
+  if [ "${FAILED:-0}" = "0" ]; then
+    echo "RESULT: all checks passed."
+  else
+    echo "RESULT: at least one check FAILED — apply the printed fixes top to bottom (earlier layers cause later failures)."
+  fi
+  [ "${FAILED:-0}" = "0" ]
+}
+
 case "${1:-status}" in
   status)
     echo "mode: $(mode)"
-    curl -fsS -m 3 "$URL/health" 2>/dev/null || echo "daemon: not reachable on $URL"
-    echo
+    curl -fsS -m 3 "$URL/health" 2>/dev/null | python3 -m json.tool 2>/dev/null || echo "daemon: not reachable on $URL (run: ai-harness-fusion diag)"
     ;;
   on) set_mode moe ;;
   off) set_mode passthrough ;;
@@ -34,7 +153,13 @@ case "${1:-status}" in
   logs)
     tail -n "${2:-20}" "$LOG" 2>/dev/null || echo "(no fusion telemetry yet)"
     ;;
+  errors)
+    grep -E '"degraded"|"client_error"|"error"' "$LOG" 2>/dev/null | tail -n "${2:-20}" || echo "(no errors recorded)"
+    ;;
+  diag)
+    diag
+    ;;
   *)
-    sed -n '2,9p' "$0"; exit 64
+    sed -n '2,11p' "$0"; exit 64
     ;;
 esac

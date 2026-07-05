@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# ai-harness-fusion — control the item-level fusion proxy (fusion-api :8400).
+#
+#   ai-harness-fusion status    current mode + daemon health
+#   ai-harness-fusion on        switch to "moe" (fan-out + synthesis per item)
+#   ai-harness-fusion off       switch to "passthrough" (single model)
+#   ai-harness-fusion toggle    flip the mode
+#   ai-harness-fusion logs      tail recent fusion telemetry
+set -euo pipefail
+
+MODE_FILE="$HOME/.agent-fusion/fusion-mode"
+URL="http://127.0.0.1:8400"
+LOG="$HOME/.local/share/ai-harness/obs/fusion.jsonl"
+
+mode() { cat "$MODE_FILE" 2>/dev/null || echo passthrough; }
+
+set_mode() {
+  mkdir -p "$(dirname "$MODE_FILE")"
+  printf '%s\n' "$1" > "$MODE_FILE"
+  echo "fusion mode: $1"
+}
+
+case "${1:-status}" in
+  status)
+    echo "mode: $(mode)"
+    curl -fsS -m 3 "$URL/health" 2>/dev/null || echo "daemon: not reachable on $URL"
+    echo
+    ;;
+  on) set_mode moe ;;
+  off) set_mode passthrough ;;
+  toggle)
+    if [ "$(mode)" = "moe" ]; then set_mode passthrough; else set_mode moe; fi
+    ;;
+  logs)
+    tail -n "${2:-20}" "$LOG" 2>/dev/null || echo "(no fusion telemetry yet)"
+    ;;
+  *)
+    sed -n '2,9p' "$0"; exit 64
+    ;;
+esac

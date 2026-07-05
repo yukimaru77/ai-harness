@@ -104,6 +104,15 @@ This is the apples-to-apples comparison: same prompt, same moment, all routes.
 `ai-harness-stats` shows per-route ok-rate and p50/p95. Run it manually or
 periodically (e.g. after config changes: `ai-harness-bench --note "reason"`).
 
+## Fusion schema — `fusion.jsonl` (schema: 1)
+
+Written by fusion-api (:8400). `fusion_item` per request: `mode`
+(moe/passthrough/background/degraded), per-candidate `model/ok/latency_ms/
+stop_reason/error`, `n_survivors`, `synthesizer`, `synthesis_ms`, `total_ms`,
+`degraded` (`all_candidates_failed` | `synthesis_failed`), and the incoming
+`trace_id`. Plus `mode_change`, `boot`, `shutdown` events.
+`ai-harness-fusion logs` tails it; the monitor probes `/health`.
+
 ## Lifecycle schema — `proxy-lifecycle.jsonl` (schema: 1)
 
 `boot` → `render_ok` (or `render_failed`) → `proxy_spawned{proxy_pid}` →

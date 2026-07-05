@@ -47,7 +47,7 @@ run_route() {
   local out="$WORKDIR/$route.out"
   local cmd=()
   case "$route" in
-    claude-fusion|claude-codex|claude-glm)
+    claude-fusion|claude-codex|claude-glm|claude-moe)
       cmd=("$BIN_DIR/$route" --print "$prompt") ;;
     codex-fusion|codex-glm)
       cmd=("$BIN_DIR/$route" exec --skip-git-repo-check "$prompt") ;;

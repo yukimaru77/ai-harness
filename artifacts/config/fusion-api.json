@@ -1,0 +1,18 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 8400,
+  "upstream": "http://127.0.0.1:8317",
+  "advertised_model": "fusion-v1",
+  "background_model_alias": "fusion-bg",
+  "candidates": [
+    "claude-opus-4-8",
+    "oauth-gpt-5.5",
+    "zai/glm-5.2"
+  ],
+  "synthesizer": "oauth-gpt-5.5",
+  "passthrough_model": "oauth-gpt-5.5",
+  "background_model": "oauth-gpt-5.5",
+  "candidate_timeout_s": 240,
+  "synthesis_timeout_s": 600,
+  "keepalive_s": 10
+}

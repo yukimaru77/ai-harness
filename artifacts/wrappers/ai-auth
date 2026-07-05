@@ -192,6 +192,30 @@ def login_openai():
     raise SystemExit("OpenAI/Codex OAuth timed out")
 
 
+def login_anthropic():
+    """Register the Claude account inside CLIProxyAPI (for fusion-api's
+    Claude candidate/synthesizer). Native `claude` login is separate."""
+    payload = request("/v0/management/anthropic-auth-url?is_webui=true")
+    target = payload.get("url")
+    state = payload.get("state")
+    if not target or not state:
+        raise SystemExit("management API did not return an OAuth URL")
+    print("Opening browser for Anthropic/Claude OAuth...")
+    open_url(target)
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        time.sleep(2)
+        poll = request("/v0/management/get-auth-status?state=" + urllib.parse.quote(state))
+        st = poll.get("status")
+        if st == "ok":
+            print("Anthropic/Claude OAuth: registered in CLIProxyAPI")
+            return
+        if st == "error":
+            raise SystemExit("Anthropic OAuth failed: " + str(poll.get("error", "unknown")))
+        print("waiting...")
+    raise SystemExit("Anthropic OAuth timed out")
+
+
 def login_codex():
     codex_bin = read_paths().get("REAL_CODEX", "codex")
     os.execv(codex_bin, [codex_bin, "login"])
@@ -324,6 +348,8 @@ def main():
         login_claude()
     elif cmd == ["login", "openai"]:
         login_openai()
+    elif cmd == ["login", "anthropic"]:
+        login_anthropic()
     elif cmd == ["login", "codex"]:
         login_codex()
     elif cmd == ["login", "opencode-openai"]:
@@ -339,7 +365,7 @@ def main():
     elif cmd == ["doctor"]:
         os.execvp("ai-harness-doctor", ["ai-harness-doctor"])
     else:
-        print("usage: ai-auth [status|login claude|login openai|login codex|login opencode-openai|open|open zai|rotate zai|logs|doctor]", file=sys.stderr)
+        print("usage: ai-auth [status|login claude|login openai|login anthropic|login codex|login opencode-openai|open|open zai|rotate zai|logs|doctor]", file=sys.stderr)
         raise SystemExit(64)
 
 

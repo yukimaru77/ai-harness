@@ -50,6 +50,8 @@ Source `/Users/nonaka/.config/ai-harness/shell.sh` or open a new shell, then use
 - `ai-harness-monitor`: one-shot health probe (also runs every 5 min via LaunchAgent `com.nonaka.ai-harness.monitor`).
 - `ai-harness-stats`: telemetry analysis — per-route error rates, latency percentiles, upstream health, proxy restarts. See `OBSERVABILITY.md` for schemas, jq recipes, and the failure runbook.
 - `ai-harness-bench`: same tiny prompt through all 7 routes, timed — the direct route-vs-route comparison (`--routes a,b` to subset, `--note` to label).
+- `claude-moe`: Claude Code through the item-level fusion proxy (fusion-api, :8400). Starts in passthrough (single model); the `/moe` slash command — or `ai-harness-fusion on` — switches every subsequent step to fan-out across the candidate models (Claude/GPT/GLM) with a synthesizer merging them. Config: `~/.config/ai-harness/fusion-api.json`.
+- `ai-harness-fusion`: control the fusion proxy — `status` / `on` / `off` / `toggle` / `logs`.
 - `ai-harness-agent`: cc-switch-style skill/MCP selection for the harness routes. Central store `~/.agents/skills` → symlink selection `~/.agent-fusion/skills` (default: NOTHING selected — harness routes see no skills and no MCP servers). `list` / `select` (interactive y/n over every skill and MCP candidate) / `add`・`remove <skill>` / `mcp-add`・`mcp-remove <server>` (candidates come from your `~/.claude.json`) / `sync`. You can also just ask your AI agent — it reads the same list and asks you item by item. The user's normal `~/.claude` and `~/.codex` keep their full skill/MCP setup.
 
 ## Paths

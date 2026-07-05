@@ -137,6 +137,10 @@ check() {
   for cand in "com.$LA_LABEL_USER.ai-harness.monitor" com.nonaka.ai-harness.monitor; do
     [ -f "$HOME_DIR/Library/LaunchAgents/$cand.plist" ] && MONITOR_PLIST="$HOME_DIR/Library/LaunchAgents/$cand.plist" && MONITOR_LABEL="$cand" && break
   done
+  local FUSION_PLIST="" FUSION_LABEL=""
+  for cand in "com.$LA_LABEL_USER.ai-harness.fusion" com.nonaka.ai-harness.fusion; do
+    [ -f "$HOME_DIR/Library/LaunchAgents/$cand.plist" ] && FUSION_PLIST="$HOME_DIR/Library/LaunchAgents/$cand.plist" && FUSION_LABEL="$cand" && break
+  done
 
   run() {
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -184,7 +188,8 @@ check() {
   { [ "$want_opencode" = true ] && [ "$want_glm" = true ]; } && require_file "$BIN_DIR/opencode-glm"
   local c
   for c in ai-auth ai-harness-doctor ai-harness-enable ai-harness-rollback \
-           ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent; do
+           ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent \
+           ai-harness-fusion claude-moe; do
     require_file "$BIN_DIR/$c"
   done
   [ -n "$MONITOR_PLIST" ] || { echo "missing monitor LaunchAgent plist" >&2; exit 66; }
@@ -195,7 +200,8 @@ check() {
   local LOCAL_BIN="$HOME_DIR/.local/bin" cmd link target
   for cmd in claude-fusion codex-fusion claude-codex claude-glm codex-glm opencode-codex opencode-glm \
              ai-auth ai-harness-doctor ai-harness-enable ai-harness-rollback \
-             ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent; do
+             ai-harness-monitor ai-harness-stats ai-harness-bench ai-harness-agent \
+             ai-harness-fusion claude-moe; do
     [ -e "$BIN_DIR/$cmd" ] || continue
     link="$LOCAL_BIN/$cmd"
     target="$BIN_DIR/$cmd"
@@ -236,6 +242,10 @@ check() {
     fi
     launchctl print "gui/$(id -u)/$MONITOR_LABEL" >/dev/null 2>&1 || \
       launchctl bootstrap "gui/$(id -u)" "$MONITOR_PLIST"
+    if [ -n "$FUSION_PLIST" ]; then
+      launchctl print "gui/$(id -u)/$FUSION_LABEL" >/dev/null 2>&1 || \
+        launchctl bootstrap "gui/$(id -u)" "$FUSION_PLIST"
+    fi
   fi
 
   say "AI Harness install/check complete"

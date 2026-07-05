@@ -191,6 +191,18 @@ The user can also do this themselves later: `ai-harness-agent select` is an
 interactive y/n walk-through of every item. Whenever the user asks "what
 skills/MCP do the harness routes have?", answer from `ai-harness-agent list`.
 
+## Phase 5.7 — fusion-api (optional; claude + codex needed, glm recommended)
+
+Item-level fusion proxy: install `artifacts/service/fusion-api` to
+`~/.local/libexec/ai-harness/fusion-api`, copy
+`artifacts/config/fusion-api.json` to `~/.config/ai-harness/`, install the
+`com.<user>.ai-harness.fusion` plist, bootstrap it, and verify
+`curl http://127.0.0.1:8400/health`. Register the Claude account in
+CLIProxyAPI with `ai-auth login anthropic` so `claude-opus-4-8` works as a
+candidate/synthesizer (until then set synthesizer to `oauth-gpt-5.5`).
+The `/moe` slash command lives at `~/.agent-fusion/claude/commands/moe.md`
+(copy from `artifacts/config/claude/commands/moe.md`).
+
 ## Phase 6 — verify (all selected routes)
 
 ```bash

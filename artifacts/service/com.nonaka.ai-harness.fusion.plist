@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.nonaka.ai-harness.fusion</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>/Users/nonaka/.local/libexec/ai-harness/fusion-api</string>
+	</array>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/nonaka/.local/share/ai-harness/obs/fusion.launchd.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/nonaka/.local/share/ai-harness/obs/fusion.launchd.out.log</string>
+	<key>Umask</key>
+	<integer>63</integer>
+</dict>
+</plist>

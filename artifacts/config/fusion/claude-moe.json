@@ -4,11 +4,11 @@
   "advertised_model": "fusion-v1",
   "background_model_alias": "fusion-bg",
   "candidates": [
-    "claude-opus-4-8",
+    "claude-opus-4-7",
     "oauth-gpt-5.5",
     "zai/glm-5.2"
   ],
-  "synthesizer": "claude-opus-4-8",
-  "passthrough_model": "claude-opus-4-8",
+  "synthesizer": "claude-opus-4-7",
+  "passthrough_model": "claude-opus-4-7",
   "background_model": "claude-sonnet-5"
 }

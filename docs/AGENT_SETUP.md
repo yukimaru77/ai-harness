@@ -216,7 +216,11 @@ and restart the fusion LaunchAgent. No code changes.
    plain binaries). `ai-harness-agent sync` symlinks both into the isolated
    moe-session homes automatically. CLI alternative:
    `ai-harness-fusion on|off <instance>`.
-6. Verify with `ai-harness-fusion diag all` — every line must be PASS.
+6. Codex discovers skills (CODEX_HOME/skills), not prompts, from natural
+   language: install `artifacts/config/skills/moe/` into `~/.agents/skills/moe`
+   and symlink it into `~/.codex/skills/moe` so "moe を試して" works without
+   typing /moe. (Claude needs nothing extra: commands are model-visible.)
+7. Verify with `ai-harness-fusion diag all` — every line must be PASS.
 
 ## Phase 6 — verify (all selected routes)
 

@@ -44,7 +44,7 @@ streaming:
   bootstrap-retries: 1
 
 ws-auth: true
-disable-claude-cloak-mode: true
+disable-claude-cloak-mode: false
 
 quota-exceeded:
   switch-project: false

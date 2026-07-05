@@ -9,9 +9,9 @@
     "oauth-gpt-5.5",
     "zai/glm-5.2"
   ],
-  "synthesizer": "oauth-gpt-5.5",
-  "passthrough_model": "oauth-gpt-5.5",
-  "background_model": "oauth-gpt-5.5",
+  "synthesizer": "claude-opus-4-8",
+  "passthrough_model": "claude-opus-4-8",
+  "background_model": "claude-sonnet-5",
   "candidate_timeout_s": 240,
   "synthesis_timeout_s": 600,
   "keepalive_s": 10

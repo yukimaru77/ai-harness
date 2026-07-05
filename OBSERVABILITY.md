@@ -167,6 +167,7 @@ then `ai-harness-stats --errors` / `--trace <id>` for the session side.
 | items with `degraded: synthesis_failed` | candidates fine, synthesizer errored; client got best candidate | read `synthesis_error_body`; often rate limit on the synthesizer model |
 | `aborted: client_disconnected_during_fanout` | user cancelled mid-item | harmless; frequent occurrences = fan-out too slow, drop the slowest candidate |
 | moe items but 1 candidate always slow | see per-instance p95 in `ai-harness-stats` Fusion section | reduce that model's `count` to 0 (remove) in fusion-api.json, restart |
+| instant 400 "role 'system' is not supported on this model" | Claude Code >=2.1.201 inserts mid-conversation system-role messages; older Anthropic models reject them | fusion-api coerces them to user messages (`coerce_system_messages: true`, default) — if you see this, the flag was disabled or the daemon predates it |
 
 ## Lifecycle schema — `proxy-lifecycle.jsonl` (schema: 1)
 

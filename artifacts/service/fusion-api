@@ -55,6 +55,12 @@ DEFAULT_INSTANCE = {
     "synthesis_timeout_s": 600,
     "keepalive_s": 10,
     "strip_thinking_from_candidates": True,
+    # Claude Code >=2.1.201 inserts mid-conversation role:"system" messages,
+    # which older Anthropic models (e.g. opus-4-7) reject with 400
+    # "role 'system' is not supported on this model". When enabled (anthropic
+    # protocol only), such messages are converted to user messages wrapped in
+    # <system-message> tags before forwarding upstream.
+    "coerce_system_messages": True,
 }
 
 SYNTH_INSTRUCTION = (
@@ -163,6 +169,30 @@ class AnthropicProto:
     path = "/v1/messages"
 
     @staticmethod
+    def sanitize_body(body):
+        msgs = body.get("messages")
+        if not isinstance(msgs, list) or not any(
+                isinstance(m, dict) and m.get("role") == "system" for m in msgs):
+            return body
+        out = dict(body)
+        new_msgs = []
+        for m in msgs:
+            if isinstance(m, dict) and m.get("role") == "system":
+                content = m.get("content")
+                if isinstance(content, str):
+                    text = content
+                else:
+                    text = "\n".join(b.get("text", "") for b in (content or [])
+                                      if isinstance(b, dict) and b.get("type") == "text")
+                new_msgs.append({"role": "user", "content": [
+                    {"type": "text",
+                     "text": "<system-message>\n" + text + "\n</system-message>"}]})
+            else:
+                new_msgs.append(m)
+        out["messages"] = new_msgs
+        return out
+
+    @staticmethod
     def request_meta(body):
         msgs = body.get("messages", [])
         last_role = msgs[-1].get("role") if msgs else None
@@ -232,6 +262,10 @@ class AnthropicProto:
 
 class ResponsesProto:
     path = "/v1/responses"
+
+    @staticmethod
+    def sanitize_body(body):
+        return body
 
     @staticmethod
     def request_meta(body):
@@ -312,6 +346,8 @@ PROTOCOLS = {"anthropic": AnthropicProto, "responses": ResponsesProto}
 
 
 def upstream_request(cfg, proto, body, model, stream, timeout, trace):
+    if cfg.get("coerce_system_messages") and proto is AnthropicProto:
+        body = proto.sanitize_body(body)
     payload = dict(body)
     payload["model"] = model
     payload["stream"] = stream
